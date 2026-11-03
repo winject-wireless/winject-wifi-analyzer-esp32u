@@ -1,0 +1,5 @@
+aidocs/
+__pycache__/
+*.pyc
+.venv/
+captures/
