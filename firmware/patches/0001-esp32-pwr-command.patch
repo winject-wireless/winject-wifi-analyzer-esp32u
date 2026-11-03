@@ -1,0 +1,26 @@
+--- a/main/targets/esp32/receiver.c	2026-11-04 07:15:55.248933266 +0800
++++ b/main/targets/esp32/receiver.c	2026-11-04 07:15:55.292266604 +0800
+@@ -200,6 +200,7 @@
+ #define BURST_ID        "ESP32SDR"
+ #define BURST_MAX_RATE  6
+ #include "burst_commands.h"
++#include "pwr_command.h" /* esp32-power-meter */
+ 
+ static void command(char *line) {
+     if (burst_version_command(line)) return;
+@@ -207,13 +208,14 @@
+ #ifdef RING_PROBE
+     if (ring_probe_command(line)) return;
+ #endif
++    if (pwr_command(line)) return; /* esp32-power-meter */
+     if (spectrum_command(line, frequency_mhz, spectrum_acquire)) return;
+     if (burst_common_command(line)) return;
+     unsigned n;
+     char extra;
+     if (!strcmp(line, "CAPS"))
+         reply(
+-            "CAPS VERSION GPIO SPEC SPECN SPECCAPS SPECSTAT DCT UARTBAUD RXLIMITS SERIALLEASE TUNEEXT RX40 RX16 LPFANA GAIN HWAGC IQ8\n");
++            "CAPS PWR VERSION GPIO SPEC SPECN SPECCAPS SPECSTAT DCT UARTBAUD RXLIMITS SERIALLEASE TUNEEXT RX40 RX16 LPFANA GAIN HWAGC IQ8\n");
+     else if (sscanf(line, "BANDWIDTH %u %c", &n, &extra) == 1 &&
+              (!n || (n >= RX_BANDWIDTH_MIN && n <= RX_BANDWIDTH_MAX))) {
+         rx_filter = rx_bandwidth_dcap(n);

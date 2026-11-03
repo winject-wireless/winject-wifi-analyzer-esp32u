@@ -26,14 +26,47 @@ through a fixed attenuator on the bench.
 | Path | Contents |
 | --- | --- |
 | `firmware/esp-sdr` | ESP-SDR, git submodule, unmodified (GPLv3) |
-| `host/` | Host tool (Python) |
-| `tests/` | Host tests |
+| `firmware/power_meter/pwr_command.h` | On-chip `PWR` measurement command (GPLv3) |
+| `firmware/patches/` | Hooks `PWR` into ESP-SDR's ESP32 receiver |
+| `firmware/build.sh` | Copies the submodule, applies the patches, builds/flashes |
+| `host/esp32_power_meter/` | Host tool (Python: pyserial, numpy) |
+| `tests/` | Host tests, including a gcc test of `pwr_command.h` |
 
 ## Firmware
 
-ESP-SDR pins its own ESP-IDF commit per target in
-`firmware/esp-sdr/firmware-targets.json` (ESP32: `25fe69f`). Build and flash
-it as its README describes, for target `esp32` (UART0, 2 Mbaud).
+```sh
+git submodule update --init --recursive
+. ~/esp/esp-idf-v5.5.5/export.sh       # or ESP-SDR's pinned IDF (firmware-targets.json)
+firmware/build.sh flash /dev/ttyUSB0
+```
+
+The ESP32 measures on-chip; only one summary line crosses the serial link:
+
+```text
+PWR <captures> <rate> <threshold_db> <min_burst_us>
+PWR caps=20 bursts=37 med=-23.10 p10=-23.40 p90=-22.85 min=... max=... peak=...
+    noise=-61.20 clip_ppm=0 len_us=121.50 gain=MANUAL_40
+```
+
+Rate codes: 0 = 80, 1 = 40, 6 = 16 MS/s. Each capture is a 16,380-sample
+snapshot; bursts are runs whose 1 µs average power is `threshold_db` above the
+capture's noise floor (20th percentile) and at least `min_burst_us` long.
+Burst power is the mean over the burst with 10 % trimmed from each end.
+
+## Host tool
+
+```sh
+cd host
+python3 -m esp32_power_meter info
+python3 -m esp32_power_meter gain-scan --freq 2412            # pick a gain: 1:1, no clipping
+python3 -m esp32_power_meter measure --freq 2412 --gain 40 --captures 50
+python3 -m esp32_power_meter calibrate --freq 2412 --gain 40 --known-dbm -30
+python3 -m esp32_power_meter measure --freq 2412 --gain 40 --offset-db 12.3
+python3 -m esp32_power_meter spectrum --freq 2412 --gain 40   # debug: raw I/Q to the host
+```
+
+Tests: `python3 -m unittest discover -s tests` and
+`cc -O2 -o /tmp/pwr_host_test tests/pwr_host_test.c -lm && /tmp/pwr_host_test`.
 
 ## Status
 
@@ -41,5 +74,7 @@ Work in progress.
 
 ## License
 
-`firmware/esp-sdr` is GPLv3 (see its `LICENSE`). It is used unmodified as a
-separate program; the host tool talks to it over its serial protocol.
+`firmware/esp-sdr` is GPLv3 (see its `LICENSE`). The firmware this repo builds
+(ESP-SDR plus `firmware/power_meter` and `firmware/patches`) is therefore GPLv3
+as a whole; `pwr_command.h` carries that notice. The host tool is a separate
+program that talks to the firmware over its serial protocol.
