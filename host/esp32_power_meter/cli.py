@@ -129,7 +129,7 @@ def cmd_spectrum(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="esp32_power_meter")
     ap.add_argument("--port", default="/dev/ttyUSB0")
-    ap.add_argument("--baud", type=int, default=2_000_000)
+    ap.add_argument("--baud", type=int, default=921_600)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def common(p):

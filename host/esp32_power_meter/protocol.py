@@ -82,9 +82,9 @@ class Capture:
 
 
 class EspSdr:
-    """Talks to ESP-SDR over a serial port (2 Mbaud by default)."""
+    """Talks to ESP-SDR over a serial port (921600 baud: this repo's firmware build)."""
 
-    def __init__(self, port: str, baud: int = 2_000_000, timeout: float = 2.0):
+    def __init__(self, port: str, baud: int = 921_600, timeout: float = 2.0):
         import serial  # pyserial; imported here so decoding works without it
 
         # Do not toggle DTR/RTS: on UART bridges they are wired to EN/BOOT.
@@ -121,7 +121,7 @@ class EspSdr:
     def sync(self, attempts: int = 5) -> None:
         """Discard boot output and stale bytes until the nonce is echoed."""
         for _ in range(attempts):
-            nonce = f"{random.getrandbits(32):08x}"
+            nonce = str(random.getrandbits(32))  # firmware parses a decimal u64
             self.ser.reset_input_buffer()
             self.ser.write(f"SYNC {nonce}\n".encode())
             deadline = time.monotonic() + 3.0

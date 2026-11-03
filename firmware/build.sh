@@ -6,9 +6,9 @@
 #   firmware/build.sh                 # build
 #   firmware/build.sh flash /dev/ttyUSB0
 #
-# Needs an ESP-IDF environment (source export.sh first). ESP-SDR pins its IDF
-# commit in firmware-targets.json; set IDF_PATH to that checkout if the
-# installed release does not build.
+# Needs an ESP-IDF environment (source export.sh first): use the IDF commit
+# ESP-SDR pins in firmware-targets.json (ESP32: 25fe69f, IDF v6.2-dev). The
+# ESP32 UART runs at 921600 baud (sdkconfig.defaults.power_meter).
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -31,13 +31,14 @@ mkdir -p "$work"
 cp -a "$src/." "$work/"
 find "$work" -name .git -prune -exec rm -rf {} +
 cp "$here/power_meter/pwr_command.h" "$work/main/targets/esp32/"
+cp "$here/sdkconfig.defaults.power_meter" "$work/"
 for p in "$here"/patches/*.patch; do
     patch -d "$work" -p1 --no-backup-if-mismatch < "$p"
 done
 
 cd "$work"
 idf.py -B build-esp32 -DIDF_TARGET=esp32 -DSDKCONFIG=build-esp32/sdkconfig \
-    -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32" build
+    -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32;sdkconfig.defaults.power_meter" build
 
 if [ "${1:-}" = "flash" ]; then
     idf.py -B build-esp32 -p "${2:-/dev/ttyUSB0}" flash

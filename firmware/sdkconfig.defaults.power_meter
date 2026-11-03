@@ -1,0 +1,4 @@
+# esp32-power-meter overlay on ESP-SDR's ESP32 defaults.
+# The ESP32-U board's original CP2102 tops out at 921600 baud (ESP-SDR's 2 Mbaud
+# default needs a CP2102N/CH343-class bridge).
+CONFIG_ESP_SDR_UART_BAUD=921600

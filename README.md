@@ -36,9 +36,13 @@ through a fixed attenuator on the bench.
 
 ```sh
 git submodule update --init --recursive
-. ~/esp/esp-idf-v5.5.5/export.sh       # or ESP-SDR's pinned IDF (firmware-targets.json)
+. ~/esp/esp-idf-esp-sdr/export.sh      # ESP-SDR's pinned IDF (firmware-targets.json, ESP32: 25fe69f)
 firmware/build.sh flash /dev/ttyUSB0
 ```
+
+IDF v5.5.5 builds but the firmware hangs in `app_main` (PHY internals differ);
+use the pinned commit. The UART runs at 921600 baud: the ESP32-U board's
+original CP2102 cannot do ESP-SDR's default 2 Mbaud.
 
 The ESP32 measures on-chip; only one summary line crosses the serial link:
 
