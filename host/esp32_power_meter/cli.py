@@ -100,6 +100,20 @@ def cmd_calibrate(args) -> int:
     return 0
 
 
+def cmd_cw(args) -> int:
+    """Continuous signal (CW reference): mean snapshot power; offset if known."""
+    with _open(args) as sdr:
+        r = sdr.pwrc(args.captures, args.rate)
+    line = (f"cw freq_mhz={args.freq} rate_msps={args.rate} med={r['med']:g} p10={r['p10']:g} "
+            f"p90={r['p90']:g} clip_ppm={r['clip_ppm']:g} gain={r['gain']}")
+    if args.known_dbm is not None:
+        line += f" known_dbm={args.known_dbm:g} offset_db={args.known_dbm - r['med']:.2f}"
+    print(line)
+    if r.get("clip_ppm", 0) > 100:
+        print("warning=clipping: lower the gain index or add attenuation")
+    return 0
+
+
 def cmd_spectrum(args) -> int:
     """Average spectrum over captures that contain a burst, burst samples only."""
     specs = []
@@ -156,6 +170,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("calibrate", help="needs --gain: an AGC reading has no fixed offset"); common(p); onchip(p)
     p.add_argument("--known-dbm", type=float, required=True, help="true input power at the SDR port")
     p.set_defaults(func=cmd_calibrate)
+    p = sub.add_parser("cw", help="continuous signal: tune 3 MHz off the tone"); common(p); onchip(p)
+    p.add_argument("--known-dbm", type=float, default=None, help="true input power: print the offset")
+    p.set_defaults(func=cmd_cw)
     p = sub.add_parser("spectrum", help="debug: raw captures to the host"); common(p)
     p.add_argument("--nfft", type=int, default=256)
     p.add_argument("--rows", type=int, default=32)

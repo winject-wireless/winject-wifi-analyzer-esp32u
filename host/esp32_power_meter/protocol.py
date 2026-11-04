@@ -54,10 +54,10 @@ def payload_len(samples: int, bits: int) -> int:
     return -(-samples * bits // 8)
 
 
-def parse_pwr(reply: str) -> dict:
-    """Parse 'PWR caps=.. bursts=.. med=.. ... gain=MANUAL_40'."""
+def parse_pwr(reply: str, tag: str = "PWR") -> dict:
+    """Parse 'PWR caps=.. bursts=.. med=.. ... gain=MANUAL_40' (or a PWRC reply)."""
     parts = reply.split()
-    if not parts or parts[0] != "PWR":
+    if not parts or parts[0] != tag:
         raise SdrError(f"unexpected PWR reply: {reply}")
     out: dict = {}
     for kv in parts[1:]:
@@ -182,6 +182,17 @@ class EspSdr:
         finally:
             self.ser.timeout = old
         return parse_pwr(reply)
+
+    def pwrc(self, captures: int = 20, rate_msps: float = 40.0) -> dict:
+        """PWRC: mean power of whole snapshots, for a continuous (CW) signal."""
+        code = rate_code(rate_msps)
+        old = self.ser.timeout
+        self.ser.timeout = max(old, 2.0 + 0.1 * captures)
+        try:
+            reply = self.command(f"PWRC {int(captures)} {code}")
+        finally:
+            self.ser.timeout = old
+        return parse_pwr(reply, "PWRC")
 
     # -- captures -------------------------------------------------------------
 

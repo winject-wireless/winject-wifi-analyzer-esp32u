@@ -131,6 +131,24 @@ int main(void) {
     run("PWR 2 0 10 20");
     assert(field("clip_ppm=") > 0);
 
+    /* PWRC: a carrier filling the whole capture (PWR rejects it as edge-cut). */
+    scene_clip = false;
+    scene_noise_dbfs = -50.0;
+    scene_burst_dbfs = -22.0;
+    scene_bursts = 1;
+    scene_burst_start = 0;
+    scene_burst_len = 16384;
+    run("PWR 3 0 10 20");
+    assert(field("bursts=") == 0);
+    run("PWRC 10 6");
+    assert(!strncmp(last_reply, "PWRC ", 5));
+    assert(fabs(field(" med=") - (-22.0)) < 0.2);   /* noise adds ~0.004 dB */
+    scene_burst_dbfs = -32.0;
+    run("PWRC 10 1");
+    assert(fabs(field(" med=") - (-32.0)) < 0.2);
+    char badc[] = "PWRC 0 6";
+    assert(pwr_command(badc) && !strncmp(last_reply, "ERR args", 8));
+
     /* Bad arguments. */
     char bad[] = "PWR 0 0 10 20";
     assert(pwr_command(bad) && !strncmp(last_reply, "ERR args", 8));

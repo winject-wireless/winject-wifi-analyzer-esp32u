@@ -56,6 +56,10 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(r["bursts"], 10)
         self.assertAlmostEqual(r["med"], -20.0)
         self.assertEqual(r["gain"], "MANUAL_40")
+        c = parse_pwr("PWRC caps=20 med=-22.10 p10=-22.15 p90=-22.05 clip_ppm=0 gain=MANUAL_18", "PWRC")
+        self.assertAlmostEqual(c["med"], -22.1)
+        with self.assertRaises(Exception):
+            parse_pwr("PWRC caps=1 med=-1", "PWR")
         empty = parse_pwr("PWR caps=3 bursts=0 med=nan p10=nan noise=-50.13 gain=HARDWARE")
         self.assertNotEqual(empty["med"], empty["med"])  # NaN
 
@@ -65,6 +69,8 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual((a.func, a.gain, a.captures, a.rate), (cli.cmd_measure, 20, 5, 80.0))
         a = ap.parse_args(["gain-scan", "--stride", "4"])
         self.assertEqual((a.func, a.captures, a.stride), (cli.cmd_gain_scan, 5, 4))
+        a = ap.parse_args(["cw", "--freq", "2447", "--gain", "18", "--known-dbm", "-40"])
+        self.assertEqual((a.func, a.freq, a.known_dbm), (cli.cmd_cw, 2447, -40.0))
         a = ap.parse_args(["calibrate", "--gain", "20", "--known-dbm", "-30"])
         self.assertEqual((a.func, a.known_dbm), (cli.cmd_calibrate, -30.0))
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

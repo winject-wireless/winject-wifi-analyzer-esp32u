@@ -169,9 +169,51 @@ static void pwr_fmt_db(char *out, size_t size, float v) {
     snprintf(out, size, "%s%d.%02d", c < 0 ? "-" : "", abs(c) / 100, abs(c) % 100);
 }
 
+/* PWRC <captures> <rate>: mean power of whole snapshots, for continuous
+ * signals (a CW reference source fills every capture, so PWR would reject it
+ * as edge-cut). Replies
+ *   PWRC caps=<n> med=<dBFS> p10=<dBFS> p90=<dBFS> clip_ppm=<n> gain=<...>
+ * Tune off the tone (e.g. 3 MHz): DC correction and LO leakage sit at 0 Hz. */
+static bool pwrc_command(char *line) {
+    unsigned caps, rate;
+    char extra;
+    if (sscanf(line, "PWRC %u %u %c", &caps, &rate, &extra) != 2 || caps == 0 || caps > PWR_MAX_CAPS ||
+        (rate != 0 && rate != 1 && rate != 6)) {
+        reply("ERR args\n");
+        return true;
+    }
+    const unsigned clock = rate == 0 ? 1 : rate == 1 ? 2 : 0;
+    const unsigned n = MAX_SAMPLES;
+    uint64_t clipped = 0;
+    for (unsigned c = 0; c < caps; c++) {
+        unsigned elapsed;
+        if (!acquire_iq(n, 0, clock, &elapsed)) return true;   /* ERR already sent */
+        clipped += pwr_prepare(n);
+        double acc = 0;
+        for (unsigned j = 0; j < n; j++) acc += PWR_P(j);
+        pwr_noise_db[c] = pwr_db((float)(acc / (double)n) / PWR_FS2);
+        vTaskDelay(1);
+    }
+    float med = pwr_quantile(pwr_noise_db, caps, 0.5f);   /* sorts */
+    float p10 = pwr_noise_db[(unsigned)(0.1f * (caps - 1) + 0.5f)];
+    float p90 = pwr_noise_db[(unsigned)(0.9f * (caps - 1) + 0.5f)];
+    char s_med[16], s_p10[16], s_p90[16], gain[24];
+    pwr_fmt_db(s_med, sizeof s_med, med);
+    pwr_fmt_db(s_p10, sizeof s_p10, p10);
+    pwr_fmt_db(s_p90, sizeof s_p90, p90);
+    if (hardware_agc)
+        snprintf(gain, sizeof gain, "HARDWARE");
+    else
+        snprintf(gain, sizeof gain, "MANUAL_%u", gain_code);
+    reply("PWRC caps=%u med=%s p10=%s p90=%s clip_ppm=%u gain=%s\n", caps, s_med, s_p10, s_p90,
+          (unsigned)((clipped * 1000000ull) / ((uint64_t)caps * n)), gain);
+    return true;
+}
+
 static bool pwr_command(char *line) {
     unsigned caps, rate, threshold, min_us;
     char extra;
+    if (!strncmp(line, "PWRC ", 5)) return pwrc_command(line);
     if (strncmp(line, "PWR ", 4)) return false;
     if (sscanf(line, "PWR %u %u %u %u %c", &caps, &rate, &threshold, &min_us, &extra) != 4 ||
         caps == 0 || caps > PWR_MAX_CAPS || (rate != 0 && rate != 1 && rate != 6) ||
