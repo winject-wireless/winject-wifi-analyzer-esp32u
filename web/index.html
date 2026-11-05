@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Winject WiFi Analyzer</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <div><strong>WINJECT</strong><span>WiFi Analyzer · ESP32U</span></div>
+      </div>
+      <div class="status"><span id="status-dot"></span><span id="status-text">Connecting</span></div>
+    </header>
+
+    <aside class="rail" aria-label="Analyzer views">
+      <button class="nav active" data-view="frames"><span>⌁</span>Frames</button>
+      <button class="nav" data-view="constellation"><span>⠿</span>Constellation</button>
+      <button class="nav" data-view="power"><span>◒</span>Power</button>
+      <button class="nav" data-view="spectrum"><span>⌇</span>Spectrum</button>
+    </aside>
+
+    <main>
+      <section class="device-strip">
+        <label>Mode<select id="mode"><option value="frames">Frame monitor</option><option value="iq">Raw IQ</option><option value="sweep">Sweep</option></select></label>
+        <label>Center<input id="frequency" type="number" min="100" max="6000" value="2442"><span>MHz</span></label>
+        <label>Gain<select id="gain"><option value="hardware">Hardware AGC</option><option value="40">Manual 40</option><option value="30">Manual 30</option></select></label>
+        <button id="apply" class="primary">Apply</button>
+        <div class="metric"><small>Frame rate</small><strong id="frame-rate">—</strong></div>
+        <div class="metric"><small>Dropped</small><strong id="dropped">0</strong></div>
+      </section>
+
+      <section id="view-frames" class="view active">
+        <div class="section-heading"><div><p class="eyebrow">802.11 monitor</p><h1>Air traffic</h1></div><div class="live"><span></span>Live MPDUs</div></div>
+        <div class="split wide-left">
+          <article class="panel table-panel">
+            <div class="panel-title"><h2>Received frames</h2><span>Newest first · full MPDU retained</span></div>
+            <div class="table-scroll"><table><thead><tr><th>Time</th><th>Type</th><th>Source</th><th>Destination</th><th>RSSI</th><th>Len</th></tr></thead><tbody id="frames-body"></tbody></table></div>
+          </article>
+          <article class="panel detail-panel">
+            <div class="panel-title"><h2>Frame detail</h2><span id="frame-seq">Select a frame</span></div>
+            <dl id="frame-fields" class="facts"></dl>
+            <h3>MPDU bytes</h3><pre id="frame-hex">Waiting for a frame…</pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="view-constellation" class="view">
+        <div class="section-heading"><div><p class="eyebrow">Complex samples</p><h1>Constellation</h1></div><div class="segmented"><button class="active" data-source="csi">Frame CSI</button><button data-source="raw">Raw IQ</button></div></div>
+        <div class="split equal">
+          <article class="panel plot-panel"><canvas id="constellation-canvas"></canvas><div class="axis x">In-phase</div><div class="axis y">Quadrature</div></article>
+          <article class="panel explain"><p class="eyebrow" id="constellation-kind">FRAME-ALIGNED CSI</p><h2 id="constellation-title">Channel state for frame #—</h2><p id="constellation-copy">CSI points are complex channel estimates per OFDM subcarrier. They are associated with a received frame, but are not decoded payload symbols.</p><div class="stats-grid"><div><small>RSSI</small><strong id="c-rssi">—</strong></div><div><small>Points</small><strong id="c-points">—</strong></div><div><small>Noise floor</small><strong id="c-noise">—</strong></div><div><small>Channel</small><strong id="c-channel">—</strong></div></div><button id="capture-iq" class="primary">Capture raw IQ snapshot</button></article>
+        </div>
+      </section>
+
+      <section id="view-power" class="view">
+        <div class="section-heading"><div><p class="eyebrow">Structured + unstructured RF</p><h1>Power meter</h1></div><div class="segmented"><button class="active" data-power="iq">Raw IQ</button><button data-power="rssi">Frame RSSI</button></div></div>
+        <div class="split power-grid">
+          <article class="panel gauge-panel"><div class="gauge"><canvas id="gauge-canvas"></canvas><div><strong id="power-value">—</strong><span id="power-unit">dBFS</span></div></div><p id="calibration">Relative power · add a calibrated offset for dBm</p><div class="stats-grid"><div><small>RMS</small><strong id="p-rms">—</strong></div><div><small>Peak</small><strong id="p-peak">—</strong></div><div><small>Clipped</small><strong id="p-clip">—</strong></div><div><small>Samples</small><strong id="p-samples">—</strong></div></div></article>
+          <article class="panel plot-panel history"><div class="panel-title"><h2>Power history</h2><span>Relative level</span></div><canvas id="power-canvas"></canvas></article>
+        </div>
+      </section>
+
+      <section id="view-spectrum" class="view">
+        <div class="section-heading"><div><p class="eyebrow">ESP-SDR tuning range</p><h1>Spectrum sweep</h1></div><button id="start-sweep" class="primary">Start sweep</button></div>
+        <article class="panel sweep-controls"><label>Start<input id="sweep-start" type="number" value="1850"><span>MHz</span></label><label>Stop<input id="sweep-stop" type="number" value="2850"><span>MHz</span></label><label>Step<input id="sweep-step" type="number" value="10"><span>MHz</span></label><label>Detector<select id="detector"><option>Average</option><option>Peak</option></select></label><div class="range-note">ESPARGOS measured range: <b>1850–2850 MHz</b></div></article>
+        <article class="panel spectrum-panel"><div class="panel-title"><h2>Wideband power</h2><span id="sweep-progress">Ready</span></div><canvas id="spectrum-canvas"></canvas><div class="spectrum-scale"><span id="scale-start">1850 MHz</span><span id="scale-stop">2850 MHz</span></div></article>
+      </section>
+    </main>
+    <div id="toast" role="status"></div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
