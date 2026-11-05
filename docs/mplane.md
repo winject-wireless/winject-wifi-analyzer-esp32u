@@ -91,7 +91,7 @@ Lines without the `cmd:` prefix behave as before (no correlation fields). A malf
 | `WINJECT` (default) | Network, m-plane, HTTP OTA, WiFi radio, and d-plane |
 | `OTA` | Network, m-plane, and HTTP OTA only. Radio, d-plane, and test commands reply `NOK ENODEV`; `save`/`load` still keep the radio settings of a slot |
 
-The mode is persisted by `reset mode=...` and applies from the next boot. Firmware update is HTTP on port **80** (`GET /`, `POST /update`) in both modes.
+The mode is persisted by `reset mode=...` and applies from the next boot. Firmware update is HTTP on port **80** (`GET /ota` upload form, `POST /update`) in both modes; `GET /` serves the analyzer web app.
 
 ## Commands
 

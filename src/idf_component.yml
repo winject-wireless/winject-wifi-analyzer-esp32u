@@ -1,0 +1,3 @@
+dependencies:
+  # IDF 6 dropped the bundled `json` component; cJSON for the analyzer API.
+  espressif/cjson: ">=1.7.15"

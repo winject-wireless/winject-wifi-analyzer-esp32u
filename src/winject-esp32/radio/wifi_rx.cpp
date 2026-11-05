@@ -166,6 +166,10 @@ void wifi_rx::on_promiscuous(void* buf, wifi_promiscuous_pkt_type_t type)
         return;
     }
     air_pkt_.fetch_add(1, std::memory_order_relaxed);
+    if (const tap_fn tap = tap_.load(std::memory_order_acquire))
+    {
+        tap(static_cast<const wifi_promiscuous_pkt_t*>(buf), type);
+    }
     // HT MCS inject may be classified as CTRL/MISC on ESP32 promisc; Addr3 match
     // still uses the MPDU in payload when sig_len is valid.
     if (type != WIFI_PKT_DATA && type != WIFI_PKT_MISC && type != WIFI_PKT_CTRL)
@@ -239,7 +243,14 @@ void wifi_rx::promiscuous_cb(void* buf, wifi_promiscuous_pkt_type_t type)
     wifi::instance().rx().on_promiscuous(buf, type);
 }
 
-bool wifi_rx::apply_monitor()
+bool wifi_rx::set_tap(tap_fn fn, uint32_t extra_mask)
+{
+    tap_mask_.store(fn != nullptr ? extra_mask : 0, std::memory_order_relaxed);
+    tap_.store(fn, std::memory_order_release);
+    return !radio.ready() || apply_filter();
+}
+
+bool wifi_rx::apply_filter()
 {
     wifi_promiscuous_filter_t filter = {};
     // FCSFAIL stays enabled so frames that fail the FCS still reach the CB and
@@ -249,14 +260,36 @@ bool wifi_rx::apply_monitor()
                          WIFI_PROMIS_FILTER_MASK_DATA_MPDU |
                          WIFI_PROMIS_FILTER_MASK_DATA_AMPDU |
                          WIFI_PROMIS_FILTER_MASK_MISC |
-                         WIFI_PROMIS_FILTER_MASK_FCSFAIL;
+                         WIFI_PROMIS_FILTER_MASK_FCSFAIL |
+                         tap_mask_.load(std::memory_order_relaxed);
     esp_err_t err = esp_wifi_set_promiscuous_filter(&filter);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "promiscuous filter failed: %s", esp_err_to_name(err));
         return false;
     }
-    err = esp_wifi_set_promiscuous_rx_cb(promiscuous_cb);
+    if ((filter.filter_mask & WIFI_PROMIS_FILTER_MASK_CTRL) != 0)
+    {
+        wifi_promiscuous_filter_t ctrl = {};
+        ctrl.filter_mask = WIFI_PROMIS_CTRL_FILTER_MASK_ALL;
+        err = esp_wifi_set_promiscuous_ctrl_filter(&ctrl);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "promiscuous ctrl filter failed: %s",
+                     esp_err_to_name(err));
+            return false;
+        }
+    }
+    return true;
+}
+
+bool wifi_rx::apply_monitor()
+{
+    if (!apply_filter())
+    {
+        return false;
+    }
+    esp_err_t err = esp_wifi_set_promiscuous_rx_cb(promiscuous_cb);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "promiscuous cb failed: %s", esp_err_to_name(err));

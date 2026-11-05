@@ -1,3 +1,4 @@
+#include "analyzer.h"
 #include "config.h"
 #include "console.h"
 #include "device_backend_esp.h"
@@ -155,6 +156,7 @@ extern "C" void app_main(void)
     {
         ESP_LOGI(TAG, "OTA mode: network + m-plane + HTTP update only");
         start_console(netmgr, nullptr, nullptr);
+        analyzer::begin(otaHttpd(), nullptr);
         return;
     }
 
@@ -165,5 +167,9 @@ extern "C" void app_main(void)
     if (!radio_ok)
     {
         ESP_LOGW(TAG, "running degraded: OTA/m-plane up, radio down");
+    }
+    if (!analyzer::begin(otaHttpd(), radio_ok ? &wifi::instance() : nullptr))
+    {
+        ESP_LOGE(TAG, "analyzer start incomplete");
     }
 }

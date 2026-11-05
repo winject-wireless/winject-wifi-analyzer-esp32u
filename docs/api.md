@@ -22,6 +22,19 @@ not the transmitted data-symbol constellation. Raw ESP-SDR I/Q is true
 baseband, but a snapshot cannot be asserted to belong to the same MPDU reported
 by the WiFi MAC. The web app labels these two views `Frame CSI` and `Raw IQ`.
 
+## Implementation status
+
+| Area | Status |
+| --- | --- |
+| Web app at `/` (embedded in flash), OTA form moved to `/ota` | done |
+| `GET /api/v1/info`, `GET`/`PATCH /api/v1/config` (frames mode) | done |
+| WebSocket `frame`, `frame.csi`, `power` (`rssi`), `dropped` | done |
+| `iq` / `sweep` modes, `POST /captures`, `POST /sweeps`, `DELETE /operations/*` | answer `501` until the ESP-SDR receiver lands |
+| UDP mplane `analyzer_*` mirror | planned; `radio_tx channel=` already retunes over mplane |
+
+`info.features` lists only what the running firmware implements; the web app
+disables views whose feature is missing. `info.planned` names the rest.
+
 ## HTTP
 
 All JSON endpoints are under `/api/v1`.
@@ -50,7 +63,18 @@ the UI warns when a sweep leaves it.
 
 ### `GET /api/v1/config`
 
-Returns the active mode, center frequency, gain and mode-specific settings.
+Returns the active mode, center frequency, gain and mode-specific settings:
+
+```json
+{"mode":"frames","epoch":2,"channel":6,"frequency_mhz":2437,
+ "gain":{"mode":"hardware"},"csi":true,
+ "filter":{"types":["mgmt","data","misc"],"min_rssi":-128,"fcs":"any","mac":null}}
+```
+
+`filter` applies on the device before frames are queued: `types` (any of
+`mgmt`, `ctrl`, `data`, `misc`; `ctrl` adds ACK/RTS/CTS traffic), `min_rssi`
+(dBm), `fcs` (`ok` drops FCS failures, `any` keeps them) and `mac` (match on
+Addr1, Addr2 or Addr3; `null` disables).
 
 ### `PATCH /api/v1/config`
 
@@ -61,7 +85,11 @@ Applies an atomic partial update. Example:
 ```
 
 Changing mode stops the current frame stream, capture or sweep and increments
-the stream epoch.
+the stream epoch; so does retuning. The whole patch is validated before any of
+it is applied. In `frames` mode, `frequency_mhz` (or `channel`) must be a WiFi
+channel center (2412–2472 step 5, 2484 MHz) and `gain` must be
+`{"mode":"hardware"}`; manual gain is an ESP-SDR setting. Errors answer
+`{"error":"..."}` with 400, 409 (radio refused the channel) or 501.
 
 ### `POST /api/v1/captures`
 
@@ -120,6 +148,46 @@ Events:
 
 Frame events are best effort. The device never blocks the WiFi callback on a
 slow browser: it increments `dropped.frames` and keeps the newest records.
+Up to three WebSocket clients are streamed at once.
+
+### Frame event (as sent by the firmware)
+
+```json
+{"event":"frame","epoch":2,"sequence":268,"time_us":13452381,
+ "data":{"sequence":268,"time_us":13452381,"rx_timestamp_us":11195756,
+  "pkt_type":"data","rssi":-25,"noise":-96,"channel":6,"secondary":0,
+  "rate":12,"sig_mode":0,"mcs":0,"cwb":0,"aggregation":0,"stbc":0,
+  "fec_coding":0,"sgi":0,"rx_state":0,"fcs":"ok","sig_len":1504,
+  "length":1500,"truncated":false,"mpdu":"<base64>"}}
+```
+
+The radio fields are `wifi_pkt_rx_ctrl_t` verbatim. `mpdu` excludes the FCS;
+MPDUs longer than 1600 bytes are cut (`truncated`, `sig_len` keeps the air
+length). The browser decodes frame type and addresses from `mpdu`. With
+`fcs:"fail"` (`rx_state` ≠ 0) the header bytes are unreliable; on a channel
+with 802.11ax/ac traffic most PPDUs fail, because the ESP32 decodes only the
+legacy/HT part. RSSI and L-LTF CSI of such PPDUs are still valid.
+
+### `frame.csi`
+
+```json
+{"event":"frame.csi","epoch":2,"time_us":13391249,
+ "data":{"frame_sequence":267,"rx_timestamp_us":11134281,
+  "source":"28:db:3b:82:18:fb","rssi":-82,"noise":-96,"channel":6,
+  "format":"lltf_imag_real_i8","subcarriers":64,"csi":"<base64>"}}
+```
+
+L-LTF only: 64 subcarriers of `int8 imag, int8 real`, ordered 0…31, −32…−1
+(null and guard tones included). `frame_sequence` is the `frame` event with
+the same `rx_timestamp_us`, or `null` if that frame was filtered or dropped.
+DSSS/CCK frames carry no CSI.
+
+### `power` (source `rssi`) and `dropped`
+
+`power` is sent every 200 ms while frames arrive: `value`/`rms` are the linear
+mean of the frame RSSIs in the window (dBm), plus `peak`, `min` and `samples`.
+`dropped` is sent every second with cumulative `frames`, `csi` and `ws` drop
+counters and the per-second `frame_rate` and `fcs_fail_rate`.
 
 ## UDP mplane mirror
 

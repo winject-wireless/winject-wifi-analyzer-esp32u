@@ -1,4 +1,5 @@
 set(winject_srcs
+    "winject-esp32/analyzer/analyzer.cpp"
     "winject-esp32/config_types.cpp"
     "winject-esp32/console.cpp"
     "winject-esp32/diag/ether_test.cpp"
@@ -39,6 +40,11 @@ idf_component_register(
         "winject-esp32/netmgr"
         "winject-esp32/endpoint"
         "winject-esp32/radio"
+        "winject-esp32/analyzer"
+    EMBED_FILES
+        "../web/index.html"
+        "../web/app.js"
+        "../web/style.css"
     REQUIRES
         app_update
         esp_driver_gpio
@@ -50,6 +56,7 @@ idf_component_register(
         esp_rom
         esp_timer
         esp_wifi
+        espressif__cjson
         lwip
         nvs_flash
         spi_flash

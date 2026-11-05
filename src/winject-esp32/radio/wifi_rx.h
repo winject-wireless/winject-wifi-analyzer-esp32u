@@ -58,10 +58,18 @@ public:
                         const mac_filter& addr3);
     test_counters test_stats(bool clear);
 
+    // Analyzer tap: called first for every promiscuous frame (WiFi task, keep
+    // it short). extra_mask adds WIFI_PROMIS_FILTER_MASK_* bits (MGMT, CTRL)
+    // to the d-plane filter. nullptr removes the tap and the extra bits.
+    using tap_fn = void (*)(const wifi_promiscuous_pkt_t* pkt,
+                            wifi_promiscuous_pkt_type_t type);
+    bool set_tap(tap_fn fn, uint32_t extra_mask);
+
 private:
     explicit wifi_rx(wifi& radio);
 
     bool apply_monitor();
+    bool apply_filter();
 
     static void promiscuous_cb(void* buf, wifi_promiscuous_pkt_type_t type);
     void on_promiscuous(void* buf, wifi_promiscuous_pkt_type_t type);
@@ -82,6 +90,8 @@ private:
     std::atomic<uint32_t> dropped_filter_mismatched_{0};
     std::atomic<uint32_t> dropped_rx_queue_{0};
     std::atomic<uint32_t> air_pkt_{0};
+    std::atomic<tap_fn> tap_{nullptr};
+    std::atomic<uint32_t> tap_mask_{0};
 };
 
 #endif  // WINJECT_WIFI_RX_H_

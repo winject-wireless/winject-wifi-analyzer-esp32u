@@ -125,8 +125,8 @@ static esp_err_t handleRoot(httpd_req_t* req)
     snprintf(
         page, sizeof(page),
         "<!DOCTYPE html><html><body>"
-        "<h1>WInject-ESP32</h1>"
-        "<p>eth %s</p>"
+        "<h1>winject-wifi-analyzer-esp32u</h1>"
+        "<p>eth %s &middot; <a href='/'>analyzer</a></p>"
         "<p>HTTP POST /update</p>"
         "<form method='POST' action='/update' enctype='multipart/form-data'>"
         "<input type='file' name='firmware'>"
@@ -344,12 +344,16 @@ void otaBegin(manager& netmgr)
     config.server_port = OTA_HTTP_PORT;
     config.core_id = APP_TASK_CORE;
     config.stack_size = 8192;
-    // Default 7 reserves almost all of LWIP_MAX_SOCKETS for OTA sessions.
-    // One concurrent upload is enough; leave fd budget for radio upstreams.
-    config.max_open_sockets = 2;
+    // Shared with the analyzer web app: page + assets + one or two
+    // WebSockets. Default 7 would take most of LWIP_MAX_SOCKETS.
+    config.max_open_sockets = 5;
+    config.max_uri_handlers = 16;
+    config.uri_match_fn = httpd_uri_match_wildcard;
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 30;
-    config.send_wait_timeout = 30;
+    // Short send timeout: a stalled browser must not hold the httpd task
+    // (WebSocket frames are sent through it).
+    config.send_wait_timeout = 5;
     if (httpd_start(&g_httpd, &config) != ESP_OK)
     {
         ESP_LOGE(TAG, "httpd start failed");
@@ -357,8 +361,9 @@ void otaBegin(manager& netmgr)
         return;
     }
 
+    // "/" belongs to the analyzer web app; the upload form lives at /ota.
     const httpd_uri_t root = {
-        .uri = "/",
+        .uri = "/ota",
         .method = HTTP_GET,
         .handler = handleRoot,
         .user_ctx = nullptr,
@@ -390,4 +395,9 @@ void otaBegin(manager& netmgr)
 bool otaActive()
 {
     return g_httpd != nullptr;
+}
+
+httpd_handle_t otaHttpd()
+{
+    return g_httpd;
 }

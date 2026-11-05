@@ -1,5 +1,5 @@
 const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelectorAll(s)];
-const state = {frames: [], selected: null, csi: [], raw: [], power: [], spectrum: [], source: 'csi', powerSource: 'iq'};
+const state = {frames: [], selected: null, csi: [], raw: [], power: [], spectrum: [], source: 'csi', powerSource: 'iq', features: null, csiBySeq: new Map()};
 
 class Device {
   constructor(onEvent) { this.onEvent = onEvent; this.mock = location.protocol === 'file:' || new URLSearchParams(location.search).has('mock'); }
@@ -7,19 +7,27 @@ class Device {
     if (this.mock) return this.startMock();
     const info = await fetch('/api/v1/info').then((r) => { if (!r.ok) throw Error(r.status); return r.json(); });
     this.onEvent({event: 'info', data: info});
+    await this.openEvents();
+  }
+  openEvents() {
     const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/v1/events`);
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (e) => typeof e.data === 'string' && this.onEvent(JSON.parse(e.data));
-    ws.onclose = () => setStatus(false, 'Disconnected');
-    await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
-    setStatus(true, 'Device online');
+    ws.onclose = () => { setStatus(false, 'Reconnecting…'); setTimeout(() => this.openEvents().catch(() => {}), 1500); };
+    return new Promise((resolve, reject) => { ws.onopen = () => { setStatus(true, 'Device online'); resolve(); }; ws.onerror = reject; });
   }
-  async patch(config) { if (this.mock) return; await fetch('/api/v1/config', {method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(config)}); }
-  async capture() { if (this.mock) { this.mockRaw(); return; } await fetch('/api/v1/captures',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({samples:16380,sample_rate_hz:16000000,bits:8})}); }
-  async sweep(config) { if (this.mock) return this.mockSweep(config); await fetch('/api/v1/sweeps',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(config)}); }
+  async request(method, url, body) {
+    const r = await fetch(url, {method, headers: {'content-type': 'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw Error(j.error || `HTTP ${r.status}`);
+    return j;
+  }
+  async patch(config) { if (this.mock) return; return this.request('PATCH', '/api/v1/config', config); }
+  async capture() { if (this.mock) { this.mockRaw(); return; } await this.request('POST', '/api/v1/captures', {samples:16380,sample_rate_hz:16000000,bits:8}); }
+  async sweep(config) { if (this.mock) return this.mockSweep(config); await this.request('POST', '/api/v1/sweeps', config); }
   startMock() {
     setStatus(true, 'Demo data');
-    this.onEvent({event:'info',data:{mode:'frames',frequency_mhz:2442}});
+    this.onEvent({event:'info',data:{mode:'frames',frequency_mhz:2442,features:['frames','csi','rssi_power','iq','power','sweep']}});
     let seq = 0;
     this.timer = setInterval(() => {
       seq++;
@@ -51,25 +59,59 @@ function gauss(){return(Math.random()+Math.random()+Math.random()+Math.random()-
 function setStatus(ok,text){$('#status-dot').classList.toggle('ok',ok);$('#status-text').textContent=text}
 function toast(text){const el=$('#toast');el.textContent=text;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),1800)}
 
+const MGMT=['Assoc Req','Assoc Resp','Reassoc Req','Reassoc Resp','Probe Req','Probe Resp','Timing Adv','Mgmt 7','Beacon','ATIM','Disassoc','Auth','Deauth','Action','Action No-Ack','Mgmt 15'];
+const CTRL={4:'Beamform Poll',5:'NDP Announce',7:'Ctrl Wrapper',8:'BlockAck Req',9:'BlockAck',10:'PS-Poll',11:'RTS',12:'CTS',13:'ACK',14:'CF-End',15:'CF-End+Ack'};
+const DATA={0:'Data',4:'Null',8:'QoS Data',12:'QoS Null'};
+// wifi_pkt_rx_ctrl_t.rate: 11b codes 0-7 (4-7 short preamble), 11g PLCP SIGNAL codes 8-15.
+const LEGACY_MBPS={0:'1',1:'2',2:'5.5',3:'11',5:'2 short',6:'5.5 short',7:'11 short',8:'48',9:'24',10:'12',11:'6',12:'54',13:'36',14:'18',15:'9'};
+function b64(s){return Uint8Array.from(atob(s),c=>c.charCodeAt(0))}
+function macAt(b,o){return b.length>=o+6?[...b.slice(o,o+6)].map(x=>x.toString(16).padStart(2,'0')).join(':'):'—'}
+// Firmware frames carry the raw MPDU; derive the display fields from its header.
+function decodeFrame(f){
+  if(f.type)return f;
+  if(f.fcs==='fail'){f.type='FCS fail';f.source=f.destination='—';return f}
+  const b=b64(f.mpdu),fc=b[0]??0,t=(fc>>2)&3,st=fc>>4;
+  f.type=b.length<2?f.pkt_type:t===0?MGMT[st]:t===1?(CTRL[st]??`Ctrl ${st}`):t===2?(DATA[st]??`Data ${st}`):`Ext ${st}`;
+  f.destination=macAt(b,4);f.source=t===1&&[12,13].includes(st)?'—':macAt(b,10);
+  return f;
+}
+// L-LTF CSI: 64 x (imag, real) int8, order 0..31, -32..-1; drop null/guard tones.
+function decodeCsi(d){
+  if(d.points)return d.points;
+  const b=new Int8Array(b64(d.csi).buffer),pts=[];
+  for(let k=0;k+1<b.length;k+=2){const sc=k/2,f=sc<32?sc:sc-64;if(f===0||Math.abs(f)>26)continue;const q=b[k],i=b[k+1];if(i||q)pts.push([i,q])}
+  const m=Math.max(1,...pts.map(([i,q])=>Math.hypot(i,q)));return pts.map(([i,q])=>[i/m,q/m]);
+}
+function applyFeatures(f){
+  state.features=f;const has=(x)=>f.includes(x);
+  $('#capture-iq').disabled=!has('iq');$('#start-sweep').disabled=!has('sweep');
+  $$('[data-source="raw"],[data-power="iq"]').forEach(b=>{b.disabled=!has('iq');b.title=has('iq')?'':'ESP-SDR raw IQ is not in this firmware yet'});
+  $$('#mode option').forEach(o=>o.disabled=o.value!=='frames'&&!has(o.value));
+  if(!has('iq')){state.powerSource='rssi';$$('[data-power]').forEach(x=>x.classList.toggle('active',x.dataset.power==='rssi'))}
+}
 function event(e) {
-  if(e.event==='frame') { state.frames.unshift(e.data); state.frames=state.frames.slice(0,100); state.selected??=e.data; renderFrames(); $('#frame-rate').textContent='~2.3/s'; }
-  if(e.event==='frame.csi') { state.csi=e.data.points; state.csiMeta=e.data; if(state.source==='csi') renderConstellation(); }
+  if(e.event==='info') { if(e.data.features)applyFeatures(e.data.features); if(e.data.frequency_mhz)$('#frequency').value=e.data.frequency_mhz; }
+  if(e.event==='frame') { const f=decodeFrame(e.data); state.frames.unshift(f); state.frames=state.frames.slice(0,300); if(f.fcs!=='fail'||$('#show-fcs-fail').checked)state.selected??=f; renderFrames(); }
+  if(e.event==='frame.csi') { const pts=decodeCsi(e.data),seq=e.data.frame_sequence; if(seq!=null){state.csiBySeq.set(seq,{points:pts,meta:e.data});if(state.csiBySeq.size>120)state.csiBySeq.delete(state.csiBySeq.keys().next().value)} if(!state.pinned){state.csi=pts;state.csiMeta=e.data;if(state.source==='csi')renderConstellation()} }
   if(e.event==='raw.iq') { state.raw=e.data.points; state.rawMeta=e.data; if(state.source==='raw') renderConstellation(); }
   if(e.event==='power') { state.power.push({t:performance.now(),...e.data}); state.power=state.power.slice(-180); renderPower(e.data); }
   if(e.event==='sweep.tile') { state.spectrum[e.data.index]=e.data; $('#sweep-progress').textContent=`${e.data.index+1} / ${e.data.total}`; renderSpectrum(); }
-  if(e.event==='dropped') $('#dropped').textContent=e.data.frames??0;
+  if(e.event==='dropped') { $('#dropped').textContent=e.data.frames??0; if(e.data.frame_rate!=null)$('#frame-rate').textContent=`${e.data.frame_rate-(e.data.fcs_fail_rate??0)}/s`; if(e.data.fcs_fail_rate!=null)$('#fcs-fail-rate').textContent=`${e.data.fcs_fail_rate}/s`; }
 }
 const device=new Device(event);
+$('#show-fcs-fail').onchange=renderFrames;
 
 $$('.nav').forEach(b=>b.onclick=()=>{ $$('.nav,.view').forEach(x=>x.classList.remove('active')); b.classList.add('active'); $(`#view-${b.dataset.view}`).classList.add('active'); resize(); });
 $$('[data-source]').forEach(b=>b.onclick=()=>{$$('[data-source]').forEach(x=>x.classList.remove('active'));b.classList.add('active');state.source=b.dataset.source;renderConstellation()});
 $$('[data-power]').forEach(b=>b.onclick=async()=>{$$('[data-power]').forEach(x=>x.classList.remove('active'));b.classList.add('active');state.powerSource=b.dataset.power;if(state.powerSource==='iq'&&!state.power.some(p=>p.source==='iq'))await device.capture();const latest=[...state.power].reverse().find(p=>p.source===state.powerSource);if(latest)renderPower(latest)});
-$('#apply').onclick=async()=>{await device.patch({mode:$('#mode').value,frequency_mhz:+$('#frequency').value,gain:$('#gain').value==='hardware'?{mode:'hardware'}:{mode:'manual',index:+$('#gain').value}});toast('Receiver configuration applied')};
-$('#capture-iq').onclick=async()=>{state.source='raw';$$('[data-source]').forEach(x=>x.classList.toggle('active',x.dataset.source==='raw'));await device.capture()};
-$('#start-sweep').onclick=async()=>{const c={start_mhz:+$('#sweep-start').value,stop_mhz:+$('#sweep-stop').value,step_mhz:+$('#sweep-step').value,fft_bins:512,sample_rate_hz:16000000,detector:$('#detector').value.toLowerCase(),dwell_captures:4};if(c.start_mhz<1850||c.stop_mhz>2850)toast('Warning: sweep extends beyond measured ESP32 range');$('#scale-start').textContent=`${c.start_mhz} MHz`;$('#scale-stop').textContent=`${c.stop_mhz} MHz`;await device.sweep(c)};
+const guard=(fn)=>async()=>{try{await fn()}catch(err){toast(err.message)}};
+$('#apply').onclick=guard(async()=>{await device.patch({mode:$('#mode').value,frequency_mhz:+$('#frequency').value,gain:$('#gain').value==='hardware'?{mode:'hardware'}:{mode:'manual',index:+$('#gain').value}});state.frames=[];state.selected=null;state.pinned=false;toast('Receiver configuration applied')});
+$('#capture-iq').onclick=guard(async()=>{state.source='raw';$$('[data-source]').forEach(x=>x.classList.toggle('active',x.dataset.source==='raw'));await device.capture()});
+$('#start-sweep').onclick=guard(async()=>{const c={start_mhz:+$('#sweep-start').value,stop_mhz:+$('#sweep-stop').value,step_mhz:+$('#sweep-step').value,fft_bins:512,sample_rate_hz:16000000,detector:$('#detector').value.toLowerCase(),dwell_captures:4};if(c.start_mhz<1850||c.stop_mhz>2850)toast('Warning: sweep extends beyond measured ESP32 range');$('#scale-start').textContent=`${c.start_mhz} MHz`;$('#scale-stop').textContent=`${c.stop_mhz} MHz`;await device.sweep(c)});
 
-function renderFrames(){const body=$('#frames-body');body.innerHTML=state.frames.map((f,i)=>`<tr data-i="${i}" class="${state.selected?.sequence===f.sequence?'selected':''}"><td>${(f.time_us/1e6).toFixed(3)}</td><td class="type">${f.type}</td><td>${f.source}</td><td>${f.destination}</td><td class="rssi">${f.rssi} dBm</td><td>${f.length}</td></tr>`).join('');body.querySelectorAll('tr').forEach(r=>r.onclick=()=>{state.selected=state.frames[+r.dataset.i];renderFrames();renderDetail()});renderDetail()}
-function renderDetail(){const f=state.selected;if(!f)return;$('#frame-seq').textContent=`Sequence #${f.sequence}`;$('#frame-fields').innerHTML=[['Type',f.type],['RSSI',`${f.rssi} dBm`],['Source',f.source],['Destination',f.destination],['Channel',f.channel],['FCS',f.fcs.toUpperCase()]].map(([k,v])=>`<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');const bytes=Uint8Array.from(atob(f.mpdu),c=>c.charCodeAt(0));$('#frame-hex').textContent=[...bytes].map((v,i)=>(i%16?'':'\n'+i.toString(16).padStart(4,'0')+'  ')+v.toString(16).padStart(2,'0')+' ').join('').trim()}
+function visibleFrames(){return $('#show-fcs-fail').checked?state.frames:state.frames.filter(f=>f.fcs!=='fail')}
+function renderFrames(){const body=$('#frames-body'),rows=visibleFrames();body.innerHTML=rows.map((f,i)=>`<tr data-i="${i}" class="${state.selected?.sequence===f.sequence?'selected':''}${f.fcs==='fail'?' fcs-fail':''}"><td>${(f.time_us/1e6).toFixed(3)}</td><td class="type">${f.type}</td><td>${f.source}</td><td>${f.destination}</td><td class="rssi">${f.rssi} dBm</td><td>${f.length}</td></tr>`).join('');body.querySelectorAll('tr').forEach(r=>r.onclick=()=>{state.selected=rows[+r.dataset.i];const c=state.csiBySeq.get(state.selected.sequence);state.pinned=!!c;if(c){state.csi=c.points;state.csiMeta=c.meta;renderConstellation()}renderFrames();renderDetail()});renderDetail()}
+function renderDetail(){const f=state.selected;if(!f)return;$('#frame-seq').textContent=`Sequence #${f.sequence}`;$('#frame-fields').innerHTML=[['Type',f.type],['RSSI',`${f.rssi} dBm`],['Source',f.source],['Destination',f.destination],['Channel',f.channel],['FCS',f.fcs.toUpperCase()],...(f.sig_mode!=null?[['PHY',f.sig_mode===0?`${LEGACY_MBPS[f.rate]??`rate ${f.rate}`} Mb/s`:`HT MCS ${f.mcs}${f.cwb?' 40M':''}${f.sgi?' SGI':''}`],['Noise floor',`${f.noise} dBm`],['CSI',state.csiBySeq.has(f.sequence)?'yes':'—']]:[]),...(f.truncated?[['Truncated',`${f.length} of ${f.sig_len-4} B`]]:[])].map(([k,v])=>`<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');const bytes=b64(f.mpdu);$('#frame-hex').textContent=[...bytes].map((v,i)=>(i%16?'':'\n'+i.toString(16).padStart(4,'0')+'  ')+v.toString(16).padStart(2,'0')+' ').join('').trim()}
 
 function canvas(id){const c=$(id),dpr=devicePixelRatio||1,r=c.getBoundingClientRect();if(c.width!==Math.round(r.width*dpr)||c.height!==Math.round(r.height*dpr)){c.width=Math.round(r.width*dpr);c.height=Math.round(r.height*dpr)}const x=c.getContext('2d');x.setTransform(dpr,0,0,dpr,0,0);return{x,w:r.width,h:r.height}}
 function grid(ctx,w,h,vertical=8,horizontal=6){ctx.strokeStyle='#1d303b';ctx.lineWidth=1;for(let i=1;i<vertical;i++){ctx.beginPath();ctx.moveTo(i*w/vertical,0);ctx.lineTo(i*w/vertical,h);ctx.stroke()}for(let i=1;i<horizontal;i++){ctx.beginPath();ctx.moveTo(0,i*h/horizontal);ctx.lineTo(w,i*h/horizontal);ctx.stroke()}}
