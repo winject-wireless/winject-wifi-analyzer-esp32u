@@ -1,11 +1,10 @@
 #include "settings.h"
 
-#include "wifi.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "esp_log.h"
-#include "esp_netif.h"
 #include "nvs.h"
 #include "sdkconfig.h"
 
@@ -103,9 +102,9 @@ tune_limits settings::tune_build_limits()
 settings_snapshot settings::defaults()
 {
     settings_snapshot s;
-    esp_ip4_addr_t addr = {};
-    esp_netif_set_ip4_addr(&addr, ETH_FALLBACK_ADDR);
-    s.network.ip = addr.addr;
+    // Network byte order in memory (a.b.c.d as bytes), as network_config uses.
+    static const uint8_t k_fallback[4] = {ETH_FALLBACK_ADDR};
+    memcpy(&s.network.ip, k_fallback, sizeof(s.network.ip));
     s.tune.eth_rx_ring_sz = CONFIG_ETH_DMA_RX_BUFFER_NUM;
     s.tune.eth_tx_ring_sz = CONFIG_ETH_DMA_TX_BUFFER_NUM;
     s.tune.wifi_tx_ring_sz = CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM;
@@ -121,7 +120,8 @@ bool settings::snapshot_valid(const settings_snapshot& snap)
            r.channel >= WIFI_CHANNEL_MIN && r.channel <= WIFI_CHANNEL_MAX &&
            r.tx_power_dbm >= WIFI_TX_POWER_DBM_MIN &&
            r.tx_power_dbm <= WIFI_TX_POWER_DBM_MAX &&
-           wifi::modulation_supported(r.modulation, r.channel);
+           // Radio fields are carried for slot compatibility only.
+           r.modulation[0] != '\0';
 }
 
 void settings::load_boot()
@@ -157,17 +157,17 @@ void settings::load_boot()
     {
         case read_result::ok:
             boot_ = snap;
-            ESP_LOGI(TAG, "boot mode %s slot %u", frameModeName(boot_mode_),
+            ESP_LOGI(TAG, "boot mode %s slot %u", boot_mode_name(boot_mode_),
                      current_slot_);
             break;
         case read_result::missing:
             ESP_LOGI(TAG, "boot mode %s slot %u empty, using defaults",
-                     frameModeName(boot_mode_), current_slot_);
+                     boot_mode_name(boot_mode_), current_slot_);
             break;
         case read_result::invalid:
         case read_result::io_error:
             ESP_LOGW(TAG, "boot mode %s slot %u unreadable, using defaults",
-                     frameModeName(boot_mode_), current_slot_);
+                     boot_mode_name(boot_mode_), current_slot_);
             break;
     }
 }
@@ -202,7 +202,7 @@ bool settings::set_boot_mode(WinjectMode mode)
         nvs_set_u8(nvs.get(), k_mode_key, static_cast<uint8_t>(mode));
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "set mode %s failed: %s", frameModeName(mode),
+        ESP_LOGE(TAG, "set mode %s failed: %s", boot_mode_name(mode),
                  esp_err_to_name(err));
         return false;
     }
@@ -210,7 +210,7 @@ bool settings::set_boot_mode(WinjectMode mode)
     {
         return false;
     }
-    ESP_LOGI(TAG, "boot mode -> %s", frameModeName(mode));
+    ESP_LOGI(TAG, "boot mode -> %s", boot_mode_name(mode));
     return true;
 }
 

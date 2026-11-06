@@ -1,5 +1,7 @@
 # Radio management plane (m-plane)
 
+> On the ESP32U IQ sample server this transport carries `iq_*` (docs/radio-server.md); the winject radio and test commands below reply `NOK ENODEV`. There is no HTTP OTA.
+
 The **m-plane** is a text command protocol over **UDP** on the radio's Ethernet IPv4 address. It configures the network, WiFi PHY, boot-time tuning, saved settings slots, and built-in Ethernet/WiFi traffic tests, and triggers reboots.
 
 Implementation:
@@ -91,7 +93,7 @@ Lines without the `cmd:` prefix behave as before (no correlation fields). A malf
 | `WINJECT` (default) | Network, m-plane, HTTP OTA, WiFi radio, and d-plane |
 | `OTA` | Network, m-plane, and HTTP OTA only. Radio, d-plane, and test commands reply `NOK ENODEV`; `save`/`load` still keep the radio settings of a slot |
 
-The mode is persisted by `reset mode=...` and applies from the next boot. Firmware update is HTTP on port **80** (`GET /ota` upload form, `POST /update`) in both modes; `GET /` serves the analyzer web app.
+The mode is persisted by `reset mode=...` and applies from the next boot. On the IQ sample server both modes boot the same firmware; updates are serial only.
 
 ## Commands
 

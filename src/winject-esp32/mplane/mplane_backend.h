@@ -2,7 +2,7 @@
 #define WINJECT_MPLANE_MPLANE_BACKEND_H_
 
 #include "config_types.h"
-#include "frame.h"
+#include "boot_mode.h"
 
 #include <array>
 #include <optional>

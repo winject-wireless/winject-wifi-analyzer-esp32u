@@ -5,17 +5,17 @@
 
 #include "esp_timer.h"
 
-class manager;
+class netstack;
 class settings;
 
-// mplane_device_backend for the firmware: network via manager, slots and boot
+// mplane_device_backend for the firmware: network via netstack, slots and boot
 // mode via settings, deferred esp_restart. tune is held in RAM until `save`.
 class device_backend_esp : public mplane_device_backend
 {
 public:
     // radio is nullptr in OTA / degraded boots; radio settings are then only
     // carried (boot snapshot, updated by load) into the next save.
-    device_backend_esp(manager& netmgr, settings& store,
+    device_backend_esp(netstack& netmgr, settings& store,
                        mplane_radio_backend* radio);
     ~device_backend_esp() override;
 
@@ -44,7 +44,7 @@ public:
 private:
     static void restart_cb(void* arg);
 
-    manager& netmgr_;
+    netstack& netmgr_;
     settings& store_;
     mplane_radio_backend* radio_;
     tune_config tune_;

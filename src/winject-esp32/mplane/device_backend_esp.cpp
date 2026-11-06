@@ -1,6 +1,6 @@
 #include "device_backend_esp.h"
 
-#include "manager.h"
+#include "netstack.h"
 #include "settings.h"
 
 #include "esp_app_desc.h"
@@ -15,7 +15,7 @@ static const char* TAG = "device_mplane";
 // Long enough for the console to flush the reply datagram.
 static constexpr uint64_t k_restart_delay_us = 200 * 1000;
 
-device_backend_esp::device_backend_esp(manager& netmgr, settings& store,
+device_backend_esp::device_backend_esp(netstack& netmgr, settings& store,
                                        mplane_radio_backend* radio)
     : netmgr_(netmgr),
       store_(store),
@@ -176,21 +176,10 @@ mplane_status device_backend_esp::load(uint8_t slot)
         return mplane_status::io_error;
     }
     tune_ = snap.tune;
-    const network_config net = snap.network;
-    if (!netmgr_.reactor().wake_up(
-            [this, net]()
-            {
-                if (!netmgr_.set_network(net))
-                {
-                    ESP_LOGE(TAG, "load: deferred network apply failed");
-                }
-            }))
+    // Applied by the net task after this reply has been sent.
+    if (!netmgr_.set_network(snap.network))
     {
-        ESP_LOGW(TAG, "load slot %u: wake_up failed; applying network now", slot);
-        if (!netmgr_.set_network(net))
-        {
-            ESP_LOGE(TAG, "load slot %u: network apply failed", slot);
-        }
+        ESP_LOGE(TAG, "load slot %u: network apply failed", slot);
     }
     ESP_LOGI(TAG, "loaded slot %u", slot);
     return mplane_status::ok;

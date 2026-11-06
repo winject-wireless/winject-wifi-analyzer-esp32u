@@ -2,7 +2,7 @@
 #define WINJECT_SETTINGS_H_
 
 #include "config.h"
-#include "frame.h"
+#include "boot_mode.h"
 #include "settings_blob.h"
 
 #include <stdint.h>

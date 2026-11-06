@@ -6,9 +6,9 @@ LAN8720 RMII PHY.
 
 The analyzer uses ESPARGOS's [ESP-SDR](https://github.com/ESPARGOS/esp-sdr)
 receiver backend to capture the ESP32 radio's raw baseband I/Q. Control uses
-the winject mplane convention on UDP port 22 and capture data is transferred as
-application-framed UDP over Ethernet. UART remains available for flashing and
-recovery, but it is not the sample transport.
+the winject mplane convention on UDP port 22 and samples stream as WJIQ v2 UDP
+datagrams over Ethernet to a host that runs the web app. UART is for flashing
+and recovery only.
 
 ## Hardware
 
@@ -26,61 +26,53 @@ WT32-ETH01 variant.
 
 The LAN8720 must not drive GPIO0 with an external 50 MHz clock on this target.
 
-## Network interface
+## Architecture
 
-- UDP `22`: mplane text commands and replies.
-- UDP `9001`: I/Q capture datagrams (configurable through mplane).
-- DHCP is attempted first; `192.168.32.1/24` is the fallback address.
+The ESP32U is a pure I/Q sample server; the web app runs on a host.
 
-The device hosts a same-origin HTTP/WebSocket API and browser app. UDP mplane
-remains available for winject automation and non-browser bulk receivers. See
-[docs/api.md](docs/api.md) and [docs/sample-protocol.md](docs/sample-protocol.md).
+- **Firmware:** ESP-SDR RF dump (`components/analyzer_iq`), a raw-Ethernet
+  IPv4 stack with its own DHCP client (no lwIP), mplane on UDP `22` with
+  `iq_set` / `iq_capture` / `iq_sweep` / `iq_stop` / `iq_info`, and WJIQ v2
+  sample datagrams to the host (default UDP `5300`). DHCP first,
+  `192.168.32.1/24` fallback. No HTTP/OTA: flash over serial.
+- **Host:** `python3 -m winject_wifi_analyzer --host <esp32u> serve` serves the
+  web app (default port 8080) and computes live spectrum, power/tone,
+  constellation, snapshots (`.cf32` download) and sweeps.
 
-## Analyzer features
-
-- **Frame monitor:** full promiscuous-mode 802.11 MPDUs with RSSI, RX metadata,
-  FCS state and optional per-frame CSI.
-- **Constellation views:** frame-aligned CSI and true raw ESP-SDR I/Q are shown
-  separately because CSI is a channel estimate, not decoded symbol samples.
-- **Power meter:** frame RSSI for structured traffic; IQ RMS, peak, clipping and
-  dBFS for tones or unstructured energy. Absolute dBm requires calibration.
-- **Spectrum analyzer:** cancellable tune/capture/FFT sweeps over ESP-SDR's
-  advertised range, with the ESP32's measured 1850–2850 MHz range highlighted.
-- **Web app:** frames, MPDU bytes, constellation, power history and wideband
-  sweep views served directly from the board.
+See [docs/radio-server.md](docs/radio-server.md) and
+[docs/sample-protocol.md](docs/sample-protocol.md). Measured on the bench:
+177 full 16380-sample IQ8 captures/s (48 Mbit/s) without loss.
 
 ## Layout
 
 | Path | Contents |
 | --- | --- |
 | `firmware/esp-sdr` | Pinned ESP-SDR submodule (GPLv3) |
-| `host/winject_wifi_analyzer` | Python mplane client and I/Q reassembler |
-| `web` | Buildless embedded analyzer UI; `?mock=1` enables demo data |
-| `tests` | Host protocol tests |
+| `components/analyzer_iq` | ESP32 RF dump capture/tuning (GPLv3, from ESP-SDR) |
+| `src/winject-esp32` | Firmware: `iq/`, `net/`, `mplane/`, settings |
+| `host/winject_wifi_analyzer` | Host server, DSP, mplane client, WJIQ v2 reassembler |
+| `web` | Browser app served by the host |
+| `tests`, `src/host_test` | Python and C++ host tests |
 
-## ESP-SDR base
-
-ESP-SDR pins the required ESP-IDF revision for the ESP32 profile. Point
-`IDF_PATH` at that checkout and initialize the source with:
+## Build and flash
 
 ```sh
 git submodule update --init --recursive
+pio run -e lan-module -t upload --upload-port /dev/ttyUSB1
 ```
 
-## Host example
+## Host
+
+System Python with numpy and websockets (10.x):
 
 ```sh
-python -m winject_wifi_analyzer --host 192.168.32.1 info
-python -m winject_wifi_analyzer --host 192.168.32.1 capture \
-  --frequency 2442 --samples 16380 --rate 16000000 --bits 8 --output capture.iq8
+PYTHONPATH=host python3 -m winject_wifi_analyzer --host 192.168.253.14 serve
+PYTHONPATH=host python3 -m winject_wifi_analyzer --host 192.168.253.14 info
+PYTHONPATH=host python3 -m winject_wifi_analyzer --host 192.168.253.14 capture \
+  --frequency 2442 --samples 16380 --rate 16000000 --bits 8 --output capture.cf32
 ```
 
-## Status
-
-The API contract, browser app and WJIQ host reassembler are implemented. The
-LAN8720 firmware transport, WiFi/SDR mode switching and on-board HTTP/WebSocket
-server remain to be integrated and validated on the original winject ESP32U
-board. Do not treat captures as lossless or calibrated power measurements yet.
+Power readings are relative dBFS; absolute dBm needs calibration.
 
 ## License
 

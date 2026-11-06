@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define DEVICE_HOSTNAME "winject-esp32"
+#define DEVICE_HOSTNAME "winject-iq-esp32u"
 
 // LAN8720 RMII wiring (PHY addr / MDC / MDIO / power shared).
 // RMII REF_CLK is selected by PlatformIO env (see platformio.ini):
@@ -35,6 +35,9 @@
 
 // UDP management plane (m-plane) console.
 #define CONTROL_CONSOLE_PORT 22
+// WJIQ sample datagrams: default destination port (iq_capture dst=...), and
+// the source port of every sample datagram.
+#define IQ_DATA_PORT 5300
 
 // D-plane UDP port (fixed; the manager must use the same value).
 // 1–23 byte payloads register the forward peer; 24–1472 byte payloads are
@@ -105,7 +108,9 @@
 // pool has one WIFI_RX_PACKET_CAP slot per rx_queue_sz, heap-allocated at boot.
 #define WIFI_TX_QUEUE_DEFAULT 20
 #define WIFI_TX_QUEUE_MAX 64
-#define WIFI_RX_QUEUE_DEFAULT 8
+// Analyzer: the d-plane air->UDP pool is heap (x WIFI_RX_PACKET_CAP); the
+// RF dump bank leaves little DRAM, so keep it minimal (winject used 8).
+#define WIFI_RX_QUEUE_DEFAULT 2
 #define WIFI_RX_QUEUE_MAX 32
 // WiFi driver dynamic buffers (tune wifi_tx_ring_sz / wifi_rx_ring_sz) feed
 // wifi_init_config_t at boot. Ranges follow the IDF Kconfig; the dynamic RX

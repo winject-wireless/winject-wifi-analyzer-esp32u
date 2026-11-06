@@ -23,22 +23,19 @@ set(WINJECT_PROJECT_VER "1.0.0")
 
 add_library(winject-host STATIC
     ${FW_DIR}/config_types.cpp
-    ${FW_DIR}/diag/test_run.cpp
     ${FW_DIR}/settings_blob.cpp
-    ${FW_DIR}/radio/fcs.cpp
     ${FW_DIR}/mplane/mplane_args.cpp
     ${FW_DIR}/mplane/mplane_commands.cpp
     ${FW_DIR}/mplane/mplane_reply.cpp
     ${FW_DIR}/mplane/mplane_req_id.cpp
     ${FW_DIR}/mplane/mplane_version.cpp
+    ${FW_DIR}/net/net_proto.cpp
 )
 target_include_directories(winject-host PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${FW_DIR}
-    ${FW_DIR}/diag
-    ${FW_DIR}/endpoint
-    ${FW_DIR}/radio
     ${FW_DIR}/mplane
+    ${FW_DIR}/net
 )
 target_compile_definitions(winject-host PUBLIC WINJECT_HOST_TEST
     WINJECT_VERSION_STRING="v${WINJECT_PROJECT_VER}")
@@ -47,17 +44,13 @@ target_compile_options(winject-host PRIVATE -Wall -Wextra -Werror)
 enable_testing()
 add_executable(winject-esp32-host-tests
     config_types_test.cpp
-    dplane_classify_test.cpp
-    fcs_test.cpp
     mplane_args_test.cpp
     mplane_commands_test.cpp
     mplane_version_test.cpp
+    net_proto_test.cpp
     settings_blob_test.cpp
-    test_run_test.cpp
-    udp_l2_match_test.cpp
 )
-target_include_directories(winject-esp32-host-tests PRIVATE ${FW_DIR}
-                                                      ${FW_DIR}/endpoint)
+target_include_directories(winject-esp32-host-tests PRIVATE ${FW_DIR})
 target_link_libraries(winject-esp32-host-tests PRIVATE winject-host
                       GTest::gtest_main)
 target_compile_options(winject-esp32-host-tests PRIVATE -Wall -Wextra)

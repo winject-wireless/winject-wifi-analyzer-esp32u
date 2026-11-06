@@ -37,7 +37,8 @@ public:
         invalid,
     };
 
-    static constexpr size_t k_max = 8;
+    // iq_sweep takes 9 keys.
+    static constexpr size_t k_max = 12;
 
     // false on a token without '=', an empty key, a duplicate key, or more
     // than k_max tokens. Values may be empty (`addr=`).
