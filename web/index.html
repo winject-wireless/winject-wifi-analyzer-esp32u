@@ -3,23 +3,21 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Winject IQ Analyzer</title>
+    <title>Winject WiFi Analyzer</title>
     <link rel="stylesheet" href="style.css">
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
         <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
-        <div><strong>WINJECT</strong><span>IQ Analyzer · ESP32U</span></div>
+        <div><strong>WINJECT</strong><span>WiFi Analyzer · ESP32U</span></div>
       </div>
       <div class="status"><span id="status-dot"></span><span id="status-text">Connecting</span></div>
     </header>
 
     <aside class="rail" aria-label="Analyzer views">
-      <button class="nav active" data-view="live"><span>⌇</span>Live</button>
-      <button class="nav" data-view="constellation"><span>⠿</span>Constellation</button>
-      <button class="nav" data-view="power"><span>◒</span>Power</button>
-      <button class="nav" data-view="sweep"><span>≋</span>Sweep</button>
+      <button class="nav active" data-view="constellation"><span>⠿</span>Live</button>
+      <button class="nav" data-view="live"><span>⌇</span>Spectrum</button>
     </aside>
 
     <main>
@@ -36,18 +34,23 @@
         <div class="metric"><small>Lost</small><strong id="lost">0</strong></div>
       </section>
 
-      <section id="view-live" class="view active">
+      <section id="view-live" class="view">
         <div class="section-heading"><div><p class="eyebrow">ESP-SDR raw baseband</p><h1>Live spectrum</h1></div><div class="segmented"><button class="active" data-detector="average">Average</button><button data-detector="peak">Peak hold</button></div></div>
         <article class="panel spectrum-panel"><div class="panel-title"><h2>Spectrum</h2><span id="live-meta">Waiting for samples…</span></div><canvas id="live-spectrum"></canvas><div class="spectrum-scale"><span id="live-lo">—</span><span id="live-hi">—</span></div></article>
         <article class="panel envelope-panel"><div class="panel-title"><h2>Envelope</h2><span>Peak |x| across one capture · bursts and frames show up here</span></div><canvas id="live-envelope"></canvas><div class="spectrum-scale"><span>0 µs</span><span id="env-span">—</span></div></article>
       </section>
 
-      <section id="view-constellation" class="view">
-        <div class="section-heading"><div><p class="eyebrow">Complex samples</p><h1>Constellation</h1></div><div class="segmented"><button class="active" data-points="live">Live</button><button data-points="snapshot">Snapshot</button></div></div>
-        <div class="split equal">
+      <section id="view-constellation" class="view active">
+        <div class="section-heading"><div><p class="eyebrow">ESP32U · 2.4 GHz</p><h1>Live</h1><p class="subtitle">Constellation, channel response and detected frame candidates</p></div><div class="segmented"><button class="active" data-points="corrected">Corrected</button><button data-points="raw">Raw IQ</button><button data-points="frame">Selected frame</button></div></div>
+        <div class="split equal constellation-layout">
           <article class="panel plot-panel"><canvas id="constellation-canvas"></canvas><div class="axis x">In-phase</div><div class="axis y">Quadrature</div></article>
-          <article class="panel explain"><p class="eyebrow" id="c-kind">LIVE</p><h2 id="c-title">Raw baseband IQ</h2><p>True baseband samples from the ESP32 RF dump (conventional sign, |x| = 1 at 0 dBFS). A snapshot freezes one full capture and can be downloaded as complex64.</p><div class="stats-grid"><div><small>Points</small><strong id="c-points">—</strong></div><div><small>Center</small><strong id="c-freq">—</strong></div><div><small>Rate</small><strong id="c-rate">—</strong></div><div><small>Edge</small><strong id="c-edge">—</strong></div></div><button id="snapshot" class="primary">Freeze snapshot</button> <a id="download" class="primary" href="#" hidden download>Download .cf32</a></article>
+          <article class="panel explain"><p class="eyebrow" id="c-kind">LIVE</p><h2 id="c-title">Corrected constellation</h2><p id="c-description">Waiting for a usable frame candidate.</p><div class="stats-grid"><div><small>Points</small><strong id="c-points">—</strong></div><div><small>Center</small><strong id="c-freq">—</strong></div><div><small>Rate</small><strong id="c-rate">—</strong></div><div><small id="c-evm-label">EVM</small><strong id="c-evm">Unavailable</strong></div></div><p class="note" id="c-evm-note">EVM requires synchronized, equalized symbols and a known reference.</p><button id="snapshot" class="secondary">Freeze IQ</button> <a id="download" class="secondary" href="#" hidden download>Download .cf32</a></article>
         </div>
+        <article class="panel channel-panel"><div class="panel-title"><h2>Channel response</h2><span id="channel-meta">Waiting for an L-LTF estimate</span></div><canvas id="channel-canvas" aria-label="Relative channel magnitude by OFDM subcarrier"></canvas><div class="spectrum-scale"><span>−26 subcarriers</span><span>0</span><span>+26 subcarriers</span></div><p id="channel-note" class="channel-note">OFDM subcarrier estimates are shown relative to peak; absolute gain is not calibrated.</p></article>
+        <article class="panel frames-panel"><div class="frames-heading"><div><p class="eyebrow">HOST DETECTOR</p><h2>Detected frame candidates</h2><p>Address filters match decoded 802.11 address fields exactly. Candidates without decoded addresses do not match an active filter.</p><p id="detector-status">Starting detector…</p></div><span id="frame-count" class="frame-count">0 candidates</span></div>
+          <div class="frame-filters"><label>Address 1<input id="filter-addr1" type="text" placeholder="Any" autocomplete="off" spellcheck="false"></label><label>Address 2<input id="filter-addr2" type="text" placeholder="Any" autocomplete="off" spellcheck="false"></label><label>Address 3<input id="filter-addr3" type="text" placeholder="Any · winject" autocomplete="off" spellcheck="false"></label><button id="clear-filters" class="secondary">Clear filters</button><span id="filter-error" role="status"></span></div>
+          <div class="frame-layout"><div class="table-scroll"><table><thead><tr><th>Capture</th><th>Sample</th><th>PHY</th><th>Modulation / rate</th><th>Address 3</th><th>Result</th></tr></thead><tbody id="frames-body"></tbody></table><div id="frames-empty" class="empty">Listening for candidates…</div></div><div class="frame-detail"><p class="eyebrow">SELECTED CANDIDATE</p><h3 id="frame-title">Choose a candidate</h3><div class="detail-grid"><span>PHY</span><strong id="frame-phy">—</strong><span>Modulation / rate</span><strong id="frame-modulation">—</strong><span>Address 1</span><strong id="frame-addr1">—</strong><span>Address 2</span><strong id="frame-addr2">—</strong><span>Address 3</span><strong id="frame-addr3">—</strong><span>Data-field EVM</span><strong id="frame-evm">Unavailable</strong></div><p id="frame-status" class="note">Decoded frame fields appear when available.</p><h4>MPDU</h4><pre id="frame-mpdu">Not decoded</pre></div></div>
+        </article>
       </section>
 
       <section id="view-power" class="view">

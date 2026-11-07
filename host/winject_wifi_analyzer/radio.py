@@ -9,6 +9,7 @@ from typing import Callable
 from .protocol import Capture, StreamAssembler
 
 DATA_PORT_DEFAULT = 5300
+MULTICAST_GROUP_DEFAULT = "239.255.53.1"
 
 
 class MPlaneError(RuntimeError):
@@ -51,10 +52,12 @@ class _Data(asyncio.DatagramProtocol):
 class RadioLink:
     def __init__(self, host: str, mplane_port: int = 22,
                  data_port: int = DATA_PORT_DEFAULT,
-                 on_capture: Callable[[Capture], None] | None = None) -> None:
+                 on_capture: Callable[[Capture], None] | None = None,
+                 multicast_group: str = MULTICAST_GROUP_DEFAULT) -> None:
         self.radio_ip = socket.gethostbyname(host)
         self.mplane_port = mplane_port
         self.data_port = data_port
+        self.multicast_group = multicast_group
         self.on_capture = on_capture
         self.assembler = StreamAssembler()
         self.datagrams = 0
@@ -77,7 +80,10 @@ class RadioLink:
             lambda: _Control(self), remote_addr=(self.radio_ip, self.mplane_port))
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("0.0.0.0", self.data_port))
+        membership = socket.inet_aton(self.multicast_group) + socket.inet_aton(self.local_ip)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
         await loop.create_datagram_endpoint(lambda: _Data(self), sock=sock)
 
     def _on_reply(self, text: str) -> None:
@@ -127,4 +133,4 @@ class RadioLink:
 
     @property
     def dst(self) -> str:
-        return f"{self.local_ip}:{self.data_port}"
+        return f"{self.multicast_group}:{self.data_port}"

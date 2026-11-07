@@ -1,5 +1,7 @@
 # ESP32U IQ sample server
 
+The [analyzer m-plane v1 specification](mplane-v1.md) and [sample-plane proposal](planes-v1-proposal.md) describe the intended replacement; they are not implemented yet.
+
 The ESP32U is a pure radio/sample server. It captures raw baseband I/Q with
 ESP-SDR's RF dump and streams it over Ethernet; all processing (spectrum,
 power, tone, sweep FFTs) and the web app run on a host

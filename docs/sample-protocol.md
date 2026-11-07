@@ -1,5 +1,7 @@
 # WJIQ v2 sample datagrams
 
+For the proposed replacement, see [sample and management planes v1](planes-v1-proposal.md). This page documents the current implementation.
+
 Every capture leaves the ESP32U as UDP datagrams (source port 5300) of a
 44-byte little-endian header plus up to 1400 payload bytes:
 

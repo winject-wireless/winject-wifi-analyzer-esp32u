@@ -2,15 +2,16 @@
 // over one WebSocket at /ws; the ESP32U itself only streams samples.
 const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelectorAll(s)];
 const state = {
-  status: null, live: null, snapshot: null, points: 'live',
+  status: null, live: null, liveAt: 0, snapshot: null, points: 'corrected',
   history: [], sweep: {tiles: [], range: null}, peakHold: null,
+  frames: [], verifiedFrames: [], selectedFrame: null, liveCandidate: null, liveCandidateAt: 0, filters: {addr1: '', addr2: '', addr3: ''},
 };
 let ws = null;
 
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   ws.onopen = () => setStatus(true, 'Host connected');
-  ws.onclose = () => { setStatus(false, 'Reconnecting…'); setTimeout(connect, 1500); };
+  ws.onclose = () => { setStatus(false, 'Reconnecting…'); renderConstellation(); renderChannelResponse(); setTimeout(connect, 1500); };
   ws.onmessage = (e) => handle(JSON.parse(e.data));
 }
 function send(msg) { if (ws?.readyState === 1) ws.send(JSON.stringify(msg)); }
@@ -22,6 +23,8 @@ function handle(m) {
   const d = m.data;
   if (m.event === 'status') applyStatus(d);
   else if (m.event === 'live') onLive(d);
+  else if (m.event === 'frames') onFrames(d);
+  else if (m.event === 'frames.clear') { state.frames = []; state.verifiedFrames = []; state.selectedFrame = null; state.liveCandidate = null; state.liveCandidateAt = 0; if (state.points === 'frame') selectPoints('corrected'); renderFrames(); renderConstellation(); renderChannelResponse(); }
   else if (m.event === 'snapshot') { state.snapshot = d; selectPoints('snapshot'); const a = $('#download'); a.href = d.download; a.hidden = false; toast(`Snapshot ${d.capture_id}: ${d.samples} samples`); }
   else if (m.event === 'sweep.start') { state.sweep = {tiles: [], range: [(d.start_mhz - d.step_mhz / 2) * 1e6, (d.stop_mhz + d.step_mhz / 2) * 1e6]}; $('#sweep-progress').textContent = `0 / ${d.steps}`; $('#scale-start').textContent = `${d.start_mhz} MHz`; $('#scale-stop').textContent = `${d.stop_mhz} MHz`; }
   else if (m.event === 'sweep.tile') { state.sweep.tiles[d.index] = d; $('#sweep-progress').textContent = `${d.index + 1} / ${d.total} · gain ${d.gain_index}`; renderSweep(); }
@@ -38,6 +41,17 @@ function applyStatus(s) {
   $('#lost').textContent = `${s.lost}${s.errors ? ` · ${s.errors} err` : ''}`;
   $('#run').textContent = s.mode === 'live' ? 'Stop' : 'Run';
   $('#start-sweep').textContent = s.mode === 'sweep' ? 'Stop sweep' : 'Start sweep';
+  if (state.points !== 'frame' && state.points !== 'snapshot') { renderConstellation(); renderChannelResponse(); }
+  const detector = $('#detector-status');
+  const sampleRates = Array.isArray(s.detector_sample_rates_hz) ? s.detector_sample_rates_hz.filter(Number.isFinite).map(r => `${r / 1e6} MS/s`).join(', ') : '';
+  const formats = Array.isArray(s.decoder_formats) ? s.decoder_formats.filter(v => typeof v === 'string').join(', ') : '';
+  const rates = Array.isArray(s.decoder_rates_mbps) ? s.decoder_rates_mbps.filter(Number.isFinite).join(', ') : '';
+  const backend = typeof s.decoder_backend === 'string' && s.decoder_backend ? s.decoder_backend : '';
+  const capability = [backend, formats, rates ? `${rates} Mb/s` : ''].filter(Boolean).join(' · ');
+  detector.textContent = s.detector_error ? `Detector error: ${s.detector_error}` : s.decoder_error ? `Decoder error: ${s.decoder_error}` : !s.detector_supported ? `Frame detection unavailable at this sample rate${sampleRates ? `; supported: ${sampleRates}` : ''}. Raw IQ remains available.` : `Detector: ${s.detector_processed ?? 0} bursts, ${s.detector_dropped ?? 0} skipped · Decoder${capability ? ` (${capability})` : ''}: ${s.decoder_decoded ?? 0} FCS verified / ${s.decoder_attempted ?? 0} attempted, ${s.decoder_dropped ?? 0} skipped`;
+  if (formats.includes('DSSS')) detector.textContent += s.dsss_error ? ` · DSSS error: ${s.dsss_error}` : ` · DSSS/CCK: ${s.dsss_decoded ?? 0} FCS verified / ${s.dsss_attempted ?? 0} bursts, ${s.dsss_dropped ?? 0} skipped`;
+
+
   if (r.gain_max) $('#gain-index').max = r.gain_max;
   if (first) {
     const c = s.config;
@@ -50,10 +64,11 @@ function applyStatus(s) {
 
 function onLive(d) {
   state.live = d;
+  state.liveAt = performance.now();
   state.history.push({t: performance.now(), mean: d.power.mean_dbfs, peak: d.power.peak_dbfs});
   state.history = state.history.slice(-300);
   $('#live-meta').textContent = `${mhz(d.frequency_hz)} · ${d.sample_rate_hz / 1e6} MS/s · ${d.samples} × IQ${d.bits} · gain ${d.gain_index}${d.agc ? ' (AGC)' : ''}`;
-  renderLive(); renderPower(d); if (state.points === 'live') renderConstellation();
+  renderLive(); renderPower(d); if (state.points === 'raw' || state.points === 'corrected') { renderConstellation(); renderChannelResponse(); }
 }
 
 function config() {
@@ -107,20 +122,118 @@ function renderLive() {
   $('#env-span').textContent = `${(d.samples / d.sample_rate_hz * 1e6).toFixed(0)} µs`;
 }
 
+function frameId(f) { return `${f.capture_id}:${f.start_sample}`; }
+function frameAddresses(f) { if (!f?.fcs_ok) return {}; return f.addresses && typeof f.addresses === 'object' ? f.addresses : {addr1: f.addr1, addr2: f.addr2, addr3: f.addr3}; }
+function readable(v) { return v === null || v === undefined || v === '' ? 'Unavailable' : String(v); }
+function evmText(v) { return typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(2)} %` : 'Unavailable'; }
+function modulationRate(f) {
+  const mod = f?.modulation ? String(f.modulation) : '';
+  const rate = Number.isFinite(f?.rate_mbps) ? `${f.rate_mbps} Mb/s` : '';
+  return [mod, rate].filter(Boolean).join(' · ') || 'Unavailable';
+}
+function normalizeMac(s) {
+  const input = s.trim().toLowerCase();
+  if (!input) return '';
+  const compact = input.replace(/[:-]/g, '');
+  if (!/^[0-9a-f]{12}$/.test(compact)) return null;
+  return compact.match(/../g).join(':');
+}
+function matchesFilters(frame) {
+  const addr = frameAddresses(frame);
+  return Object.entries(state.filters).every(([key, value]) => !value || (normalizeMac(addr[key] || '') === value));
+}
+function onFrames(d) {
+  const frames = Array.isArray(d) ? d : (d?.frames || []);
+  const byId = new Map(state.frames.map((f) => [frameId(f), f]));
+  const verified = new Map(state.verifiedFrames.map((f) => [frameId(f), f]));
+  for (const f of frames) { byId.set(frameId(f), f); if (f.fcs_ok) verified.set(frameId(f), f); }
+  state.frames = [...byId.values()].slice(-200);
+  state.verifiedFrames = [...verified.values()].slice(-100);
+  if (d?.history !== true) {
+    const usable = [...frames].reverse().find(f => (Array.isArray(f.constellation) && f.constellation.length) || (Array.isArray(f.channel_estimate) && f.channel_estimate.length));
+    if (usable) { state.liveCandidate = usable; state.liveCandidateAt = performance.now(); }
+  }
+  if (state.selectedFrame) state.selectedFrame = verified.get(frameId(state.selectedFrame)) || byId.get(frameId(state.selectedFrame)) || state.selectedFrame;
+  renderFrames();
+  if (state.points === 'corrected' || state.points === 'raw') { renderConstellation(); renderChannelResponse(); }
+}
+function renderFrames() {
+  const verifiedIds = new Set(state.verifiedFrames.map(frameId));
+  const all = [...state.verifiedFrames.slice().reverse(), ...state.frames.slice().reverse().filter(f => !verifiedIds.has(frameId(f)))];
+  const list = all.filter(matchesFilters);
+  $('#frame-count').textContent = `${state.verifiedFrames.length} FCS verified · ${list.length} shown`;
+  const body = $('#frames-body'); body.replaceChildren();
+  for (const f of list) {
+    const tr = document.createElement('tr');
+    if (state.selectedFrame && frameId(state.selectedFrame) === frameId(f)) tr.classList.add('selected');
+    const a = frameAddresses(f);
+    for (const value of [f.capture_id, f.start_sample, readable(f.phy), modulationRate(f), readable(a.addr3), f.status || 'Candidate']) {
+      const td = document.createElement('td'); td.textContent = String(value); tr.appendChild(td);
+    }
+    tr.onclick = () => { state.selectedFrame = f; selectPoints('frame'); renderFrames(); };
+    body.appendChild(tr);
+  }
+  $('#frames-empty').hidden = !!list.length;
+  if (!list.length) $('#frames-empty').textContent = all.length ? 'No frames match the active filters.' : 'Listening for candidates…';
+  const f = state.selectedFrame, a = f ? frameAddresses(f) : {};
+  $('#frame-title').textContent = f ? `Capture ${f.capture_id} · sample ${f.start_sample}` : 'Choose a candidate';
+  $('#frame-phy').textContent = f ? readable(f.phy) : '—';
+  $('#frame-modulation').textContent = f ? modulationRate(f) : '—';
+  for (const key of ['addr1', 'addr2', 'addr3']) $(`#frame-${key}`).textContent = f ? readable(a[key]) : '—';
+  $('#frame-evm').textContent = f ? evmText(f.evm_percent) : 'Unavailable';
+  $('#frame-status').textContent = f ? [f.reason || f.status || 'Preamble candidate; frame not decoded.', f.fcs_ok ? f.evm_warning : f.training_warning].filter(Boolean).join(' ') : 'Decoded frame fields appear when available.';
+  $('#frame-mpdu').textContent = f?.mpdu_hex || 'Not decoded';
+}
+function freshLiveCandidate() {
+  return state.status?.mode === 'live' && ws?.readyState === WebSocket.OPEN && performance.now() - state.liveCandidateAt < 3000 ? state.liveCandidate : null;
+}
+function displayedCandidate() { return state.points === 'frame' ? state.selectedFrame : freshLiveCandidate(); }
 function renderConstellation() {
-  const src = state.points === 'snapshot' ? state.snapshot : state.live;
+  const isFrame = state.points === 'frame', snapshot = state.points === 'snapshot';
+  const corrected = state.points === 'corrected' || isFrame;
+  const candidate = displayedCandidate();
+  const liveFresh = state.status?.mode === 'live' && ws?.readyState === WebSocket.OPEN && performance.now() - state.liveAt < 3000;
+  const src = corrected ? candidate : snapshot ? state.snapshot : liveFresh ? state.live : null;
+  const pts = corrected ? (src?.constellation || src?.training_constellation) : src?.points;
+  const valid = Array.isArray(pts) ? pts.filter(p => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1])) : [];
+  const showPayload = corrected && !!src?.fcs_ok && valid.length > 0;
+  const trainingEvm = corrected && !showPayload && valid.length > 0 && Number.isFinite(src?.training_evm_percent);
   const {x, w, h} = canvas('#constellation-canvas'); x.clearRect(0, 0, w, h); grid(x, w, h, 8, 8);
   x.strokeStyle = '#38505d'; x.beginPath(); x.moveTo(w / 2, 0); x.lineTo(w / 2, h); x.moveTo(0, h / 2); x.lineTo(w, h / 2); x.stroke();
-  if (!src) return;
-  const pts = src.points, peak = Math.max(1 / 128, ...pts.map(([i, q]) => Math.hypot(i, q))), k = 1 / peak;
-  x.fillStyle = state.points === 'snapshot' ? '#ffb86b88' : '#46a4ff99';
-  for (const [i, q] of pts) { x.beginPath(); x.arc(w / 2 + i * k * w * .45, h / 2 - q * k * h * .45, 1.8, 0, 7); x.fill(); }
-  $('#c-kind').textContent = state.points === 'snapshot' ? `SNAPSHOT #${src.capture_id}` : 'LIVE';
-  $('#c-title').textContent = state.points === 'snapshot' ? 'Frozen capture' : 'Raw baseband IQ';
-  $('#c-points').textContent = pts.length; $('#c-freq').textContent = mhz(src.frequency_hz);
-  $('#c-rate').textContent = `${src.sample_rate_hz / 1e6} MS/s`; $('#c-edge').textContent = `${(20 * Math.log10(peak)).toFixed(1)} dBFS`;
+  if (valid.length) {
+    const peak = Math.max(1 / 128, ...valid.map(([i, q]) => Math.hypot(i, q))), k = 1 / peak;
+    x.fillStyle = isFrame ? '#ffb86b99' : '#46a4ff99';
+    for (const [i, q] of valid) { x.beginPath(); x.arc(w / 2 + i * k * w * .45, h / 2 - q * k * h * .45, 1.8, 0, 7); x.fill(); }
+  }
+  $('#c-kind').textContent = isFrame ? 'SELECTED FRAME' : corrected ? (src ? `LIVE CANDIDATE · CAPTURE ${src.capture_id}` : 'LIVE · WAITING') : snapshot ? `SNAPSHOT #${src?.capture_id ?? '—'}` : 'LIVE RAW IQ';
+  $('#c-title').textContent = showPayload ? 'Decoded data-field constellation' : corrected ? 'Corrected constellation' : snapshot ? 'Frozen raw IQ' : 'Raw baseband IQ';
+  const trainingName = src?.training_kind || (/ofdm/i.test(src?.phy || '') || /ofdm/i.test(src?.detection || '') ? 'L-LTF' : 'Training');
+  const phyText = [src?.phy, modulationRate(src)].filter(x => x && x !== 'Unavailable').join(' · ');
+  $('#c-description').textContent = showPayload ? `Corrected data symbols for an FCS-verified${phyText ? ` ${phyText}` : ''} frame.` : corrected ? (valid.length ? `Estimated equalized ${trainingName} training symbols for an unverified preamble candidate. These are not decoded payload symbols.` : 'No current corrected constellation is available. Waiting for a usable candidate.') : src ? 'Samples are shown before frame synchronization or equalization. They are not demodulated symbols.' : 'No current raw IQ burst is available.';
+  $('#c-points').textContent = valid.length || '—';
+  $('#c-freq').textContent = src?.frequency_hz ? mhz(src.frequency_hz) : '—';
+  $('#c-rate').textContent = src?.sample_rate_hz ? `${src.sample_rate_hz / 1e6} MS/s` : '—';
+  $('#c-evm-label').textContent = trainingEvm ? `${trainingName} EVM (estimate)` : 'Data-field EVM (estimate)';
+  $('#c-evm').textContent = corrected ? evmText(trainingEvm ? src.training_evm_percent : src?.evm_percent) : 'Unavailable';
+  $('#c-evm-note').textContent = showPayload ? (src?.evm_warning || src?.evm_scope || 'Data-field EVM estimate; not standards-calibrated.') : corrected && src?.training_warning ? src.training_warning : trainingEvm ? `${trainingName} EVM estimate; not payload EVM.` : 'EVM requires synchronized, equalized symbols and a known reference.';
 }
-function selectPoints(which) { state.points = which; $$('[data-points]').forEach((b) => b.classList.toggle('active', b.dataset.points === which)); renderConstellation(); }
+function renderChannelResponse() {
+  const candidate = displayedCandidate();
+  const isOfdm = /ofdm/i.test(candidate?.phy || '') || /ofdm/i.test(candidate?.detection || '');
+  const values = (isOfdm && Array.isArray(candidate?.channel_estimate) ? candidate.channel_estimate : []).filter(p => Array.isArray(p) && p.length >= 3 && p.every(Number.isFinite)).sort((a,b) => a[0] - b[0]);
+  const {x, w, h} = canvas('#channel-canvas'); x.clearRect(0, 0, w, h); grid(x, w, h, 13, 4);
+  if (!values.length) { $('#channel-meta').textContent = candidate && !isOfdm ? 'No OFDM subcarrier estimate for this PHY' : 'No current channel estimate'; return; }
+  const magnitude = values.map(p => Math.hypot(p[1], p[2]));
+  const peak = Math.max(...magnitude);
+  if (!(peak > 0)) { $('#channel-meta').textContent = 'No usable channel estimate'; return; }
+  const db = magnitude.map(v => Math.max(-40, 20 * Math.log10(Math.max(v / peak, 1e-4))));
+  const pad=16, X=k => pad + (k + 26) / 52 * (w - 2 * pad), Y=v => 8 + (-v / 40) * (h - 20);
+  trace(x, values.map(p=>p[0]), db, X, Y, h, '#36e5d2');
+  x.fillStyle = '#7f97a3'; x.font = '11px monospace'; x.fillText('0 dB', 5, 12); x.fillText('−40 dB', 5, h - 6);
+  const time = Number.isFinite(candidate.timestamp_us) ? ` · device trigger ~${candidate.timestamp_us} µs (u32)` : '';
+  $('#channel-meta').textContent = `${state.points === 'frame' ? 'Selected' : 'Live'} candidate · capture ${candidate.capture_id} · sample ${candidate.start_sample}${time} · ${values.length} carriers`;
+}
+function selectPoints(which) { state.points = which; $$('[data-points]').forEach((b) => b.classList.toggle('active', b.dataset.points === which)); renderConstellation(); renderChannelResponse(); }
 
 function renderPower(d) {
   const p = d.power;
@@ -160,6 +273,14 @@ $$('[data-points]').forEach((b) => b.onclick = () => selectPoints(b.dataset.poin
 $('#apply').onclick = () => { send(config()); toast('Applied'); };
 $('#run').onclick = () => send({op: 'live', on: state.status?.mode !== 'live'});
 $('#snapshot').onclick = () => send({op: 'snapshot'});
+for (const key of ['addr1', 'addr2', 'addr3']) {
+  $(`#filter-${key}`).addEventListener('input', () => {
+    const values = Object.fromEntries(['addr1', 'addr2', 'addr3'].map(k => [k, normalizeMac($(`#filter-${k}`).value)]));
+    if (Object.values(values).some(v => v === null)) { $('#filter-error').textContent = 'Use six hexadecimal octets, for example ca:fe:ba:be:00:01.'; return; }
+    $('#filter-error').textContent = ''; state.filters = values; renderFrames();
+  });
+}
+$('#clear-filters').onclick = () => { for (const key of ['addr1', 'addr2', 'addr3']) $(`#filter-${key}`).value = ''; state.filters = {addr1: '', addr2: '', addr3: ''}; $('#filter-error').textContent = ''; renderFrames(); };
 $('#start-sweep').onclick = () => {
   if (state.status?.mode === 'sweep') { send({op: 'stop_sweep'}); return; }
   const start = +$('#sweep-start').value, stop = +$('#sweep-stop').value;
@@ -167,6 +288,6 @@ $('#start-sweep').onclick = () => {
   send({op: 'sweep', start_mhz: start, stop_mhz: stop, step_mhz: +$('#sweep-step').value, rate_hz: +$('#sweep-rate').value,
     fft: +$('#sweep-fft').value, dwell: +$('#sweep-dwell').value, detector: $('#detector').value, repeat: $('#sweep-repeat').checked});
 };
-function renderAll() { renderLive(); renderConstellation(); if (state.live) renderPower(state.live); renderSweep(); }
+function renderAll() { renderLive(); renderConstellation(); renderChannelResponse(); renderFrames(); if (state.live) renderPower(state.live); renderSweep(); }
 addEventListener('resize', renderAll);
 connect();

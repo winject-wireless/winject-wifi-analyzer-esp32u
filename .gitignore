@@ -22,3 +22,6 @@ Thumbs.db
 __pycache__/
 scripts/.venv/
 build/
+
+# Native host decoder build output
+/host/winject_wifi_analyzer/_native*.so

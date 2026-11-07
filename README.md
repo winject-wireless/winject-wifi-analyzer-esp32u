@@ -33,11 +33,26 @@ The ESP32U is a pure I/Q sample server; the web app runs on a host.
 - **Firmware:** ESP-SDR RF dump (`components/analyzer_iq`), a raw-Ethernet
   IPv4 stack with its own DHCP client (no lwIP), mplane on UDP `22` with
   `iq_set` / `iq_capture` / `iq_sweep` / `iq_stop` / `iq_info`, and WJIQ v2
-  sample datagrams to the host (default UDP `5300`). DHCP first,
+  sample datagrams over multicast (group `239.255.53.1`, UDP `5300`). DHCP first,
   `192.168.32.1/24` fallback. No HTTP/OTA: flash over serial.
 - **Host:** `python3 -m winject_wifi_analyzer --host <esp32u> serve` serves the
-  web app (default port 8080) and computes live spectrum, power/tone,
-  constellation, snapshots (`.cf32` download) and sweeps.
+  web app (default port 8080). Live opens with a corrected constellation and
+  estimated L-LTF channel response when an eligible preamble is available;
+  raw IQ, candidate selection, spectrum, and address filters are also available.
+  Sample processing is on the host, not in an ESP32 promiscuous callback.
+  The experimental PHY decoder supports complete 20 MHz legacy OFDM frames
+  at 6, 9, 12, 18, 24, 36, 48 and 54 Mbit/s and exposes MPDUs/addresses only
+  after FCS passes. The Viterbi and descrambler loops run in a C++ extension;
+  acquisition, FFT/equalization, orchestration and the web server use Python
+  and NumPy. Incomplete bursts and failed FCS remain unverified candidates.
+  Optional 802.11b DSSS/CCK decoding at 1, 2, 5.5 and 11 Mbit/s uses the
+  separately built Rust `libcrafter` receiver described below. It runs in a
+  bounded worker and may skip bursts; the web status reports its own counts.
+  Data-field decision-directed EVM (including SERVICE/padding) and independent L-LTF training EVM are estimates,
+  not calibrated transmitter EVM; clipped/poor training EVM is withheld.
+  The ESP32 captures finite bursts with gaps, so it cannot observe every frame.
+  Detection runs at 40 MS/s; unsupported rates show raw IQ only. Bounded
+  processing queues can drop work under load; status reports the drops.
 
 See [docs/radio-server.md](docs/radio-server.md) and
 [docs/sample-protocol.md](docs/sample-protocol.md). Measured on the bench:
@@ -66,11 +81,43 @@ pio run -e lan-module -t upload --upload-port /dev/ttyUSB1
 System Python with numpy and websockets (10.x):
 
 ```sh
-PYTHONPATH=host python3 -m winject_wifi_analyzer --host 192.168.253.14 serve
+python3 setup.py build_ext --inplace  # C++ compiler and Python development headers required
+PYTHONPATH=host python3 -m winject_wifi_analyzer --host 192.168.253.14 serve --http-host 0.0.0.0 --http-port 8081
 PYTHONPATH=host python3 -m winject_wifi_analyzer --host 192.168.253.14 info
 PYTHONPATH=host python3 -m winject_wifi_analyzer --host 192.168.253.14 capture \
   --frequency 2442 --samples 16380 --rate 16000000 --bits 8 --output capture.cf32
 ```
+
+Without the extension, the OFDM decoder falls back to a substantially slower
+Python implementation. `pip install -e .` also builds the extension.
+
+To enable the optional DSSS/CCK receiver, install Rust/Cargo and build the
+MIT-licensed [libcrafter](https://github.com/pellegre/libcrafter) at the
+tested revision:
+
+```sh
+git clone https://github.com/pellegre/libcrafter.git
+git -C libcrafter checkout 26347a513bfbf0f5f23a330a83c87ce1ba4667fc
+cd libcrafter
+cargo build -p crafter --release --features radio --example radio_receive
+export WINJECT_CRAFTER_RADIO_RECEIVE="$PWD/target/release/examples/radio_receive"
+```
+
+Set that environment variable when starting the analyzer. For the independent
+receiver tests also set `WINJECT_CRAFTER_FIXTURES` to the checkout's
+`crafter/tests/fixtures/iq` directory. This receiver starts afresh for each
+capture, since the ESP32 leaves gaps between captures. At 40 MS/s a full burst
+is approximately 410 microseconds, limiting which complete 802.11b frames can
+fit; in particular, long-preamble 1 Mbit/s frames may exceed it. On the OPi5,
+one DSSS/CCK worker took about 18 ms per burst in a local replay test and cannot
+keep up with a 120-burst/s stream. HT, VHT and HE are not decoded.
+
+Open `http://<host-ip>:8081/` on the LAN. The current experimental ESP32U
+firmware emits multicast WJIQ v2; the proposed replacement m-plane and s-plane
+are documented but not implemented. The device may be disconnected; the
+application reports its status and attempts to resume live capture when it
+returns. Winject's Addr3 filter matches the raw six-byte 802.11 Address 3;
+other optional address filters combine with AND and exclude undecoded frames.
 
 Power readings are relative dBFS; absolute dBm needs calibration.
 

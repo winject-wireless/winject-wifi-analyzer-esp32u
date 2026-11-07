@@ -1,5 +1,7 @@
 # Radio management plane (m-plane)
 
+For the specified replacement analyzer API, see [analyzer m-plane v1](mplane-v1.md). This page describes the current firmware.
+
 > On the ESP32U IQ sample server this transport carries `iq_*` (docs/radio-server.md); the winject radio and test commands below reply `NOK ENODEV`. There is no HTTP OTA.
 
 The **m-plane** is a text command protocol over **UDP** on the radio's Ethernet IPv4 address. It configures the network, WiFi PHY, boot-time tuning, saved settings slots, and built-in Ethernet/WiFi traffic tests, and triggers reboots.

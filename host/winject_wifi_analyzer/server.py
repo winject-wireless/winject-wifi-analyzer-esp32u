@@ -7,6 +7,7 @@ power/tone readings, constellations and sweep tiles.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import json
 import logging
 import mimetypes
@@ -23,6 +24,9 @@ from . import dsp
 from .protocol import (Capture, FLAG_LAST_CAPTURE, FLAG_LAST_IN_STEP,
                        FLAG_LAST_STEP)
 from .radio import MPlaneError, RadioLink
+from .native_decoder import BACKEND as DECODER_BACKEND
+from .legacy_ofdm import SUPPORTED_RATES_MBPS
+from .dsss import DsssDecoder
 
 log = logging.getLogger("analyzer")
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
@@ -39,9 +43,10 @@ class Analyzer:
         self.ui_period = 1.0 / ui_hz
         self.clients: set[WebSocketServerProtocol] = set()
         self.config = {"freq_mhz": 2437, "gain": "agc", "bw_mhz": 0,
-                       "rate_hz": 16_000_000, "n": 16380, "bits": 8,
+                       "rate_hz": 40_000_000, "n": 16380, "bits": 8,
                        "nfft": 1024, "average": 0.6, "detector": "average"}
         self.mode = "idle"  # idle | live | sweep
+        self.want_live = True
         self.radio_info: dict[str, str] = {}
         self.latest: Capture | None = None
         self.latest_seen = 0
@@ -50,6 +55,24 @@ class Analyzer:
         self.rate_window: list[float] = []
         self.sweep: dict | None = None
         self.resume_live = False
+        self.frame_queue: asyncio.Queue = asyncio.Queue(maxsize=4)
+        self.frame_records: deque[dict] = deque(maxlen=200)
+        self.decoded_records: deque[dict] = deque(maxlen=100)
+        self.frame_generation = 0
+        self.detector_dropped = 0
+        self.detector_processed = 0
+        self.detector_error: str | None = None
+        self.decode_queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+        self.decoder_attempted = 0
+        self.decoder_decoded = 0
+        self.decoder_dropped = 0
+        self.decoder_error: str | None = None
+        self.dsss = DsssDecoder()
+        self.dsss_queue: asyncio.Queue = asyncio.Queue(maxsize=4)
+        self.dsss_attempted = 0
+        self.dsss_decoded = 0
+        self.dsss_dropped = 0
+        self.dsss_error: str | None = None
         link.on_capture = self.on_capture
 
     # --- radio ------------------------------------------------------------------
@@ -61,6 +84,11 @@ class Analyzer:
                                 f"bw={int(c['bw_mhz'])}")
 
     async def start_live(self) -> None:
+        self.want_live = True
+        self.frame_generation += 1
+        self.frame_records.clear()
+        self.decoded_records.clear()
+        await self.broadcast({"event": "frames.clear", "data": {}})
         c = self.config
         await self.link.request("iq_stop")
         self.avg_spec = None
@@ -69,10 +97,13 @@ class Analyzer:
         self.mode = "live"
 
     async def stop(self) -> None:
+        self.want_live = False
+        self.frame_generation += 1
         await self.link.request("iq_stop")
         self.mode = "idle"
 
     async def start_sweep(self, req: dict) -> None:
+        self.frame_generation += 1
         start, stop = int(req["start_mhz"]), int(req["stop_mhz"])
         step = int(req.get("step_mhz", 10))
         rate = int(req.get("rate_hz", 16_000_000))
@@ -125,6 +156,109 @@ class Analyzer:
             self._sweep_capture(cap)
             return
         self.latest = cap
+        if self.mode == "live" and cap.sample_rate_hz == 40_000_000:
+            if self.dsss.available:
+                if self.dsss_queue.full():
+                    self.dsss_queue.get_nowait()
+                    self.dsss_dropped += 1
+                self.dsss_queue.put_nowait((self.frame_generation, cap))
+            if self.frame_queue.full():
+                self.frame_queue.get_nowait()
+                self.detector_dropped += 1
+            self.frame_queue.put_nowait((self.frame_generation, cap))
+
+    async def frame_loop(self) -> None:
+        # Capture callbacks never wait on DSP: under load the bounded queue
+        # discards the oldest unprocessed burst and reports that count.
+        from .frame_detector import detect_frames
+        while True:
+            generation, cap = await self.frame_queue.get()
+            if generation != self.frame_generation or self.mode != "live":
+                continue
+            try:
+                frames = await asyncio.to_thread(detect_frames, cap.samples(),
+                                                 cap.sample_rate_hz)
+            except Exception as exc:
+                log.exception("frame detector failed")
+                self.detector_error = str(exc)
+                continue
+            if generation != self.frame_generation or self.mode != "live":
+                continue
+            self.detector_processed += 1
+            if not frames:
+                continue
+            records = []
+            for frame in frames:
+                record = {**frame, "capture_id": cap.capture_id,
+                          "timestamp_us": cap.timestamp_us,
+                          "frequency_hz": cap.frequency_hz,
+                          "sample_rate_hz": cap.sample_rate_hz}
+                self.frame_records.append(record)
+                records.append(record)
+                # The legacy decoder is slower than acquisition. Queue only
+                # stronger candidates and report all dropped decode work.
+                if frame["short_score"] >= .90 and frame["long_score"] >= .90:
+                    if self.decode_queue.full():
+                        self.decode_queue.get_nowait()
+                        self.decoder_dropped += 1
+                    self.decode_queue.put_nowait((generation, cap, record))
+            await self.broadcast({"event": "frames", "data": {"frames": records}})
+
+    async def decode_loop(self) -> None:
+        from .legacy_ofdm import decode_legacy_ofdm
+        while True:
+            generation, cap, record = await self.decode_queue.get()
+            if generation != self.frame_generation or self.mode != "live":
+                continue
+            try:
+                result = await asyncio.to_thread(
+                    decode_legacy_ofdm, cap.samples(), record["start_sample"],
+                    record["long_start_sample"], cap.sample_rate_hz)
+            except Exception as exc:
+                log.exception("legacy OFDM decoder failed")
+                self.decoder_error = str(exc)
+                continue
+            self.decoder_attempted += 1
+            if result is None or generation != self.frame_generation or self.mode != "live":
+                continue
+            self.decoder_decoded += 1
+            record.update(result)
+            record["status"] = "FCS verified"
+            record["reason"] = f"Legacy {result.get('rate_mbps', '')} Mbit/s OFDM MPDU decoded; FCS verified."
+            self.decoded_records.append(record)
+            await self.broadcast({"event": "frames", "data": {"frames": [record]}})
+
+    async def dsss_loop(self) -> None:
+        # A bounded, independent queue ensures capture gaps are not joined and
+        # keeps the optional subprocess away from the network event loop.
+        while True:
+            generation, cap = await self.dsss_queue.get()
+            if generation != self.frame_generation or self.mode != "live":
+                continue
+            try:
+                frames = await asyncio.to_thread(self.dsss.decode, cap.samples(),
+                                                 cap.sample_rate_hz, cap.frequency_hz)
+            except Exception as exc:
+                log.exception("DSSS/CCK decoder failed")
+                self.dsss_error = str(exc)
+                continue
+            self.dsss_error = None
+            self.dsss_attempted += 1
+            if generation != self.frame_generation or self.mode != "live":
+                continue
+            records = []
+            for frame in frames:
+                record = {**frame, "capture_id": cap.capture_id,
+                          "timestamp_us": cap.timestamp_us,
+                          "frequency_hz": cap.frequency_hz,
+                          "sample_rate_hz": cap.sample_rate_hz,
+                          "rate_mbps": frame["rate_bps"] / 1e6,
+                          "status": "FCS verified"}
+                self.dsss_decoded += 1
+                self.decoded_records.append(record)
+                records.append(record)
+            if records:
+                await self.broadcast({"event": "frames", "data": {"frames": records}})
 
     def _sweep_capture(self, cap: Capture) -> None:
         s = self.sweep
@@ -181,12 +315,37 @@ class Analyzer:
             "mode": self.mode, "config": self.config, "radio": self.radio_info,
             "radio_ip": self.link.radio_ip, "captures_per_s": round(len(self.rate_window) / 2, 1),
             "datagrams": self.link.datagrams, "mbytes": round(self.link.bytes / 1e6, 1),
-            "completed": a.completed, "lost": a.lost, "errors": a.errors}}
+            "completed": a.completed, "lost": a.lost, "errors": a.errors,
+            "detector_processed": self.detector_processed,
+            "detector_dropped": self.detector_dropped,
+            "detector_supported": int(self.config["rate_hz"]) == 40_000_000,
+            "detector_sample_rates_hz": [40_000_000],
+            "decoder_backend": ("C++ Viterbi/descrambler, NumPy DSP" if DECODER_BACKEND == "native-cpp" else "Python/NumPy"),
+            "decoder_formats": ["legacy-ofdm"] + (["DSSS", "CCK"] if self.dsss.available else []),
+            "decoder_rates_mbps": ([1, 2, 5.5, 11] if self.dsss.available else []) + list(SUPPORTED_RATES_MBPS),
+            "dsss_attempted": self.dsss_attempted,
+            "dsss_decoded": self.dsss_decoded,
+            "dsss_dropped": self.dsss_dropped,
+            "dsss_error": self.dsss_error,
+            "detector_error": self.detector_error,
+            "decoder_attempted": self.decoder_attempted,
+            "decoder_decoded": self.decoder_decoded,
+            "decoder_dropped": self.decoder_dropped,
+            "decoder_error": self.decoder_error}}
 
     async def handle(self, ws: WebSocketServerProtocol, path: str) -> None:
         self.clients.add(ws)
         try:
             await ws.send(json.dumps(self.status()))
+            if self.frame_records or self.decoded_records:
+                # Preserve verified MPDUs independently of the much larger
+                # stream of unverified preamble candidates.
+                records = {(f["capture_id"], f["start_sample"]): f
+                           for f in self.frame_records}
+                records.update({(f["capture_id"], f["start_sample"]): f
+                                for f in self.decoded_records})
+                await ws.send(json.dumps({"event": "frames", "data": {
+                    "frames": list(records.values()), "history": True}}))
             async for raw in ws:
                 try:
                     await self.command(json.loads(raw))
@@ -252,6 +411,11 @@ class Analyzer:
                 last_status = now
                 try:
                     self.radio_info = await self.link.info()
+                    if self.want_live and self.mode != "sweep" and self.radio_info.get("kind") == "idle":
+                        log.info("radio is idle; restoring the requested live stream")
+                        await self.apply_radio()
+                        if self.want_live:
+                            await self.start_live()
                 except MPlaneError as exc:
                     self.radio_info = {"error": str(exc)}
                 await self.broadcast(self.status())
@@ -300,4 +464,13 @@ async def serve(radio: str, http_host: str, http_port: int, data_port: int) -> N
                                 process_request=app.http, max_size=1 << 20):
         log.info("web app on http://%s:%d/ (radio %s, samples -> %s)",
                  http_host, http_port, link.radio_ip, link.dst)
-        await app.ui_loop()
+        detector = asyncio.create_task(app.frame_loop())
+        decoder = asyncio.create_task(app.decode_loop())
+        dsss_decoder = asyncio.create_task(app.dsss_loop())
+        try:
+            await app.ui_loop()
+        finally:
+            detector.cancel()
+            decoder.cancel()
+            dsss_decoder.cancel()
+            await asyncio.gather(detector, decoder, dsss_decoder, return_exceptions=True)
