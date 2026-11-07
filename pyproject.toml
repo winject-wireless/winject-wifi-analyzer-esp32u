@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "winject-wifi-analyzer"
+version = "0.1.0"
+description = "Host tools for the Winject ESP32U Ethernet WiFi analyzer"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "websockets>=10,<11"]
+
+[project.optional-dependencies]
+test = ["scipy>=1.10"]
+
+[project.scripts]
+winject-wifi-analyzer = "winject_wifi_analyzer.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "host"}
+
+[tool.setuptools.packages.find]
+where = ["host"]
