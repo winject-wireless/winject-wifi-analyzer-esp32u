@@ -1,5 +1,6 @@
 set(winject_srcs
     "winject-esp32/config_types.cpp"
+    "winject-esp32/net/ether_bench.cpp"
     "winject-esp32/iq/iq_server.cpp"
     "winject-esp32/mplane/device_backend_esp.cpp"
     "winject-esp32/mplane/mplane_args.cpp"

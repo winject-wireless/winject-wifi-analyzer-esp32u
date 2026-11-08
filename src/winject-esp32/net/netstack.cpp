@@ -20,6 +20,7 @@ static const char* TAG = "net";
 namespace
 {
 
+std::atomic<uint32_t> diag_mac_rx{0}, diag_broadcast{0}, diag_arp{0}, diag_ipv4{0}, diag_probe{0}, diag_arp_reply_ok{0}, diag_arp_reply_err{0};
 constexpr int k_task_prio = 6;
 constexpr uint32_t k_task_stack = 6144;
 constexpr size_t k_rx_queue = 16;
@@ -213,6 +214,13 @@ esp_err_t netstack::on_eth_input(esp_eth_handle_t, uint8_t* buf, uint32_t len,
                                  void* priv)
 {
     auto* self = static_cast<netstack*>(priv);
+    diag_mac_rx.fetch_add(1);
+    if (len >= 57 && memcmp(buf + 42, "ESP32U_RX_TEST_", 15) == 0) diag_probe.fetch_add(1);
+    if (len >= k_eth_hdr) {
+        if (memcmp(buf, k_broadcast_mac.b, 6) == 0) diag_broadcast.fetch_add(1);
+        if (rd16(buf + 12) == k_ethertype_arp) diag_arp.fetch_add(1);
+        if (rd16(buf + 12) == k_ethertype_ipv4) diag_ipv4.fetch_add(1);
+    }
     // Cheap filter in the EMAC task: ours or broadcast, IPv4 or ARP.
     bool keep = len >= k_eth_hdr &&
                 (memcmp(buf, self->mac_.b, 6) == 0 || memcmp(buf, k_broadcast_mac.b, 6) == 0);
@@ -295,6 +303,7 @@ void netstack::task_entry(void* arg)
 
 void netstack::run()
 {
+    int64_t diag_next = 0;
     while (true)
     {
         rx_item item;
@@ -308,7 +317,12 @@ void netstack::run()
         {
             apply_config();
         }
-        dhcp_tick(esp_timer_get_time());
+        const int64_t now = esp_timer_get_time();
+        dhcp_tick(now);
+        if (now >= diag_next) {
+            diag_next = now + 5000000;
+            ESP_LOGI("eth_diag", "mac_rx=%lu broadcast=%lu arp=%lu ipv4=%lu accepted=%lu rx_drop=%lu tx_ok=%lu tx_error=%lu probe=%lu arp_reply_ok=%lu arp_reply_err=%lu", (unsigned long)diag_mac_rx.load(), (unsigned long)diag_broadcast.load(), (unsigned long)diag_arp.load(), (unsigned long)diag_ipv4.load(), (unsigned long)rx_frames_.load(), (unsigned long)rx_dropped_.load(), (unsigned long)tx_frames_.load(), (unsigned long)tx_errors_.load(), (unsigned long)diag_probe.load(), (unsigned long)diag_arp_reply_ok.load(), (unsigned long)diag_arp_reply_err.load());
+        }
     }
 }
 
@@ -577,7 +591,8 @@ void netstack::handle_arp(const eth_frame& eth)
         reply.spa = ours;
         reply.tha = arp.sha;
         reply.tpa = arp.spa;
-        transmit(tx_buf_, build_arp(tx_buf_, arp.sha, reply));
+        if (transmit(tx_buf_, build_arp(tx_buf_, arp.sha, reply))) diag_arp_reply_ok.fetch_add(1);
+        else diag_arp_reply_err.fetch_add(1);
     }
 }
 
@@ -592,6 +607,11 @@ bool netstack::resolve(uint32_t ip, uint16_t port, udp_peer* peer, TickType_t wa
     if (ip == 0xffffffffu)
     {
         peer->mac = k_broadcast_mac;
+        return true;
+    }
+    if ((ip & 0xf0000000u) == 0xe0000000u)
+    {
+        peer->mac = {{0x01, 0x00, 0x5e, static_cast<uint8_t>((ip >> 16) & 0x7f), static_cast<uint8_t>(ip >> 8), static_cast<uint8_t>(ip)}};
         return true;
     }
     const uint32_t hop = on_link(ip) ? ip : gw_.load();
