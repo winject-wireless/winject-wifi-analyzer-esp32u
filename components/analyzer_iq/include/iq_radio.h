@@ -11,8 +11,8 @@ extern "C" {
 #endif
 
 // ESP-SDR RF dump on the original ESP32 (firmware/esp-sdr, targets/esp32):
-// the WiFi MAC keeps running in promiscuous mode while the dump engine
-// copies baseband I/Q into the reserved 64 KiB bank at 0x3ffe8000.
+// the dump engine copies baseband I/Q into the reserved 64 KiB bank
+// at 0x3ffe8000.
 //
 // Words are IQ10: I in bits 0..9, raw Q in bits 10..19 (conventional
 // Q = -raw Q), gain index in bits 20..27. All calls from one task.

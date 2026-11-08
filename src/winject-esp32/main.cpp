@@ -1,6 +1,6 @@
 // winject-wifi-analyzer-esp32u: ESP32 IQ sample server.
 //
-// Boot: settings -> WiFi PHY (ESP-SDR minimal init, only to power and
+// Boot: settings -> WiFi PHY (minimal init, only to power and
 // calibrate the receiver) -> raw Ethernet stack (no lwIP) -> mplane on
 // UDP 22 -> IQ server (samples as WJIQ v2 datagrams). Firmware updates are
 // serial only.
@@ -46,8 +46,7 @@ static bool init_nvs()
     return true;
 }
 
-// ESP-SDR's receiver setup (firmware/esp-sdr targets/esp32): the WiFi
-// stack only powers and calibrates the PHY; no netif, no association.
+// The WiFi stack powers and calibrates the PHY; no netif or association.
 static bool init_wifi_phy()
 {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -70,10 +69,6 @@ static bool init_wifi_phy()
     }
     if (err == ESP_OK)
     {
-        err = esp_wifi_set_promiscuous(true);
-    }
-    if (err == ESP_OK)
-    {
         err = esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
     }
     if (err != ESP_OK)
@@ -83,6 +78,8 @@ static bool init_wifi_phy()
     }
     return true;
 }
+
+void ethernet_bench_init(netstack&);
 
 extern "C" void app_main(void)
 {
@@ -99,6 +96,7 @@ extern "C" void app_main(void)
     const settings_snapshot& boot = store.boot();
 
     netstack& net = netstack::instance();
+    ethernet_bench_init(net);
     g_device.emplace(net, store, nullptr);
     g_commands.emplace(*g_device, nullptr, nullptr);
     mplane_udp::instance().init(net, *g_commands, iq_server::handle_line, nullptr);
@@ -109,7 +107,8 @@ extern "C" void app_main(void)
     }
 
     // A radio failure leaves Ethernet + mplane up (iq_* reply ENODEV).
-    if (!init_wifi_phy() || !iq_server::begin(net))
+    bool wifi_ok = init_wifi_phy();
+    if (!wifi_ok || !iq_server::begin(net))
     {
         ESP_LOGE(TAG, "IQ receiver unavailable");
     }

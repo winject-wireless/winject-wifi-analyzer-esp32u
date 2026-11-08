@@ -20,6 +20,8 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+extern "C" uint32_t iq_diag_trigger_us(void);
+
 namespace iq_server
 {
 namespace
@@ -150,6 +152,7 @@ bool send_capture(const job& j, const uint32_t* words, const capture_meta& m)
     bool ok = true;
     for (size_t off = 0; off < total; off += k_fragment)
     {
+        if (!g_net->link_up() || !g_net->connected()) return false;
         const size_t len = total - off < k_fragment ? total - off : k_fragment;
         pack(words, j.n, j.bits, off, len, payload);
         memcpy(h, "WJIQ", 4);
@@ -190,6 +193,18 @@ bool superseded(uint32_t gen)
     return g_gen.load() != gen;
 }
 
+// Wait without burning CPU while the Ethernet link/address is unavailable.
+// A stop or replacement job remains responsive during an outage.
+bool wait_for_network(uint32_t gen)
+{
+    while (!g_net->link_up() || !g_net->connected())
+    {
+        if (superseded(gen)) return false;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    return !superseded(gen);
+}
+
 // One capture under the receiver lock; words stay valid until the next.
 bool capture_one(const job& j, unsigned freq_mhz, const uint32_t** words,
                  capture_meta* m)
@@ -201,7 +216,6 @@ bool capture_one(const job& j, unsigned freq_mhz, const uint32_t** words,
     }
     unsigned us = 0;
     const char* err = nullptr;
-    const int64_t t0 = esp_timer_get_time();
     const bool ok = iq_radio_capture(j.n, j.rate_code, words, &us, &err);
     m->frequency_khz = iq_radio_frequency() * 1000u;
     m->flags = iq_radio_hardware_agc() ? k_flag_agc : 0;
@@ -212,7 +226,7 @@ bool capture_one(const job& j, unsigned freq_mhz, const uint32_t** words,
         ESP_LOGW(TAG, "capture failed: %s", err);
         return false;
     }
-    m->timestamp_us = static_cast<uint32_t>(t0);
+    m->timestamp_us = iq_diag_trigger_us();  // experimental trigger-side CPU timestamp
     m->gain_index = static_cast<uint8_t>(((*words)[0] >> 20) & 0xff);
     m->capture_id = g_captures.fetch_add(1) + 1;
     return true;
@@ -223,7 +237,7 @@ void run_capture_job(const job& j, uint32_t gen)
     TickType_t wake = xTaskGetTickCount();
     for (uint32_t k = 0; j.count == 0 || k < j.count; ++k)
     {
-        if (superseded(gen))
+        if (!wait_for_network(gen))
         {
             return;
         }
@@ -240,10 +254,19 @@ void run_capture_job(const job& j, uint32_t gen)
         {
             m.flags |= k_flag_last_capture;
         }
-        send_capture(j, words, m);
-        if (j.interval_ms != 0)
+        const bool sent = send_capture(j, words, m);
+        if (!sent)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            wake = xTaskGetTickCount();
+        }
+        else if (j.interval_ms != 0)
         {
             vTaskDelayUntil(&wake, pdMS_TO_TICKS(j.interval_ms));
+        }
+        else if ((k & 31u) == 31u)
+        {
+            vTaskDelay(1);  // Give the idle task CPU even under continuous load.
         }
     }
 }
@@ -258,7 +281,7 @@ void run_sweep_job(const job& j, uint32_t gen)
             const unsigned f = j.start_mhz + s * j.step_mhz;
             for (unsigned d = 0; d < j.dwell; ++d)
             {
-                if (superseded(gen))
+                if (!wait_for_network(gen))
                 {
                     goto done;
                 }
@@ -266,6 +289,7 @@ void run_sweep_job(const job& j, uint32_t gen)
                 capture_meta m = {};
                 if (!capture_one(j, f, &words, &m))
                 {
+                    vTaskDelay(pdMS_TO_TICKS(10));
                     continue;
                 }
                 m.step = static_cast<uint16_t>(s);
@@ -282,7 +306,8 @@ void run_sweep_job(const job& j, uint32_t gen)
                         }
                     }
                 }
-                send_capture(j, words, m);
+                if (!send_capture(j, words, m)) vTaskDelay(pdMS_TO_TICKS(10));
+                else vTaskDelay(1);
             }
         }
     }

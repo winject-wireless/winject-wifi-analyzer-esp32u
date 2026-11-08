@@ -7,9 +7,7 @@
  * by md5 against IDF 25fe69f). Calibration helpers are compiled straight
  * from the submodule (rx_recalibration.c, rx_calibration_state.c).
  *
- * Differences from ESP-SDR: the WiFi stack stays in STA + promiscuous mode
- * for the frame monitor, and iq_radio_leave() hands the receiver back to
- * the WiFi MAC on a real channel.
+ * iq_radio_leave() restores the receiver to a real WiFi channel.
  */
 #include "iq_radio.h"
 
@@ -36,6 +34,9 @@ SOC_RESERVE_MEMORY_REGION(0x3ffe8000, 0x3fff8000, esp32_rf_dump);
 #define RX_GAIN     0x3ff5c02cu
 #define CAPACITY    16384u
 #define SENTINEL    0xa55aa55au
+
+static uint32_t trigger_time_us;
+uint32_t iq_diag_trigger_us(void) { return trigger_time_us; }
 
 static uint32_t* const samples = (uint32_t*)0x3ffe8000;
 
@@ -304,6 +305,7 @@ bool iq_radio_capture(unsigned n, unsigned rate_code, const uint32_t** words,
     uint32_t ctrl = n | ((clock == 0) << 16) | ((clock == 2) << 15);
     REG_WRITE(DUMP_CTRL, ctrl | BIT(31));
     int64_t start = esp_timer_get_time();
+    trigger_time_us = (uint32_t)esp_timer_get_time();
     REG_SET_BIT(DUMP_CTRL, BIT(19));
     REG_CLR_BIT(DUMP_CTRL, BIT(19));
     while (!(REG_READ(DUMP_CTRL) & BIT(18)) && esp_timer_get_time() - start < 20000)
