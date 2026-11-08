@@ -79,9 +79,9 @@ function handle(m) {
       state.calibration.points.push(...points); state.calibration.points.sort((a,b) => a.hz-b.hz);
       storeCalibration(); renderCalibrationTable(); renderLive(); renderCalibration();
     }
-    $('#calibration-auto-progress').textContent = d.error ? `Calibration failed: ${d.error}` : d.cancelled ? 'Calibration cancelled.' : `Finished: ${points.length} gains calibrated, ${d.skipped.length} skipped (clipped, weak, or gain mismatch).`;
+    $('#calibration-auto-progress').textContent = d.error ? `Calibration failed: ${d.error}` : d.cancelled ? 'Calibration cancelled.' : `Finished: ${points.length} gains calibrated, ${d.skipped.length} skipped (insufficient consistent captures).`;
   }
-  else if (m.event === 'error') toast(d.message);
+  else if (m.event === 'error') { $('#calibration-auto-progress').textContent = d.message; toast(d.message); }
 }
 
 function applyStatus(s) {
@@ -146,12 +146,48 @@ function yLabels(ctx, h, min, max, unit = 'dBFS') {
   ctx.fillStyle = '#7f97a3'; ctx.font = '11px monospace';
   for (let k = 0; k <= 4; k++) { const v = max - (max - min) * k / 4; ctx.fillText(`${v.toFixed(0)} ${unit}`, 6, Math.max(12, k * h / 4 - 4)); }
 }
+function spectrumAxisLabels(ctx, width, height, min, max, offset) {
+  yLabels(ctx, height, min, max, 'dBFS');
+  if (!Number.isFinite(offset)) return;
+  ctx.fillStyle = '#7f97a3'; ctx.font = '11px monospace'; ctx.textAlign = 'right';
+  for (let k = 0; k <= 4; k++) {
+    const value = max - (max - min) * k / 4 + offset;
+    ctx.fillText(`${value.toFixed(0)} dBm`, width - 6, Math.max(12, k * height / 4 - 4));
+  }
+  ctx.textAlign = 'start';
+}
+function spectrumFrequencyLabels(ctx, width, height, firstHz, lastHz) {
+  ctx.fillStyle = '#a6bbc5'; ctx.font = width < 500 ? '8px monospace' : '10px monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  const decimals = width < 500 ? 1 : 2;
+  for (let i = 1; i < 10; i++) {
+    const hz = firstHz + (lastHz - firstHz) * i / 10;
+    ctx.fillText((hz / 1e6).toFixed(decimals), width * i / 10, height - 4);
+  }
+  ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+}
 function trace(ctx, xs, ys, X, Y, h, color, fill) {
   ctx.strokeStyle = color; ctx.lineWidth = 1.3; ctx.beginPath();
   xs.forEach((f, i) => i ? ctx.lineTo(X(f), Y(ys[i])) : ctx.moveTo(X(f), Y(ys[i])));
   if (fill) { ctx.stroke(); ctx.lineTo(X(xs[xs.length - 1]), h); ctx.lineTo(X(xs[0]), h); ctx.closePath(); ctx.fillStyle = fill; ctx.fill(); } else ctx.stroke();
 }
 
+// Keep spectrum axes steady through brief peaks; expand immediately to avoid clipping.
+const spectrumAxes = {};
+function spectrumScale(name, values, unit, capture) {
+  const low = Math.min(...values), high = Math.max(...values), now = performance.now();
+  const key = `${unit}:${capture.frequency_hz}:${capture.sample_rate_hz}:${capture.gain_index}:${capture.agc}`;
+  const targetMin = Math.floor(low / 10) * 10 - 5;
+  const targetMax = Math.max(Math.ceil(high / 10) * 10 + 5, targetMin + 10);
+  let axis = spectrumAxes[name];
+  if (!axis || axis.key !== key) axis = spectrumAxes[name] = {key, min:targetMin, max:targetMax, changed:now};
+  else if (low < axis.min || high > axis.max) {
+    axis.min = Math.min(axis.min, targetMin); axis.max = Math.max(axis.max, targetMax); axis.changed = now;
+  } else if (now - axis.changed >= 10000 && (targetMin > axis.min || targetMax < axis.max)) {
+    axis.min = targetMin; axis.max = targetMax; axis.changed = now;
+  }
+  return axis;
+}
 function renderLive() {
   const d = state.live; if (!d) return;
   const {x, w, h} = canvas('#live-spectrum'); x.clearRect(0, 0, w, h); grid(x, w, h);
@@ -163,12 +199,15 @@ function renderLive() {
   } else state.peakHold = null;
   const calibrated = calibrationMatches(d);
   const offsets = calibrated ? calibrationOffsets() : [];
-  if (calibrated) db = db.map((v, i) => v + calibrationOffset(freqs[i], offsets));
-  const min = Math.floor(Math.min(...db) / 10) * 10 - 5, max = Math.max(Math.ceil(Math.max(...db) / 10) * 10 + 5, min + 10);
+  const {min, max} = spectrumScale('live', db, 'dBFS', d);
+  const axisOffset = calibrated ? calibrationOffset(d.frequency_hz, offsets) : null;
+  $('#live-axis-note').textContent = calibrationAxisNote(d, calibrated);
+  $('#live-axis-note').title = $('#live-axis-note').textContent;
   const X = (f) => (f - freqs[0]) / (freqs[n - 1] - freqs[0]) * w, Y = (v) => h - (v - min) / (max - min) * h;
   trace(x, freqs, db, X, Y, h, '#36e5d2', '#36e5d222');
-  const t = d.power; x.fillStyle = '#ff6477'; x.beginPath(); x.arc(X(t.tone_hz), Y(t.tone_dbfs + (calibrated ? calibrationOffset(t.tone_hz, offsets) : 0)), 3.5, 0, 7); x.fill();
-  yLabels(x, h, min, max, calibrated ? 'dBm' : 'dBFS');
+  const t = d.power; x.fillStyle = '#ff6477'; x.beginPath(); x.arc(X(t.tone_hz), Y(t.tone_dbfs), 3.5, 0, 7); x.fill();
+  spectrumAxisLabels(x, w, h, min, max, axisOffset);
+  spectrumFrequencyLabels(x, w, h, freqs[0], freqs[n - 1]);
   $('#live-lo').textContent = mhz(freqs[0]); $('#live-hi').textContent = mhz(freqs[n - 1]);
   const e = canvas('#live-envelope'); e.x.clearRect(0, 0, e.w, e.h); grid(e.x, e.w, e.h, 10, 3);
   const env = d.envelope, emin = -60, emax = 5, EY = (v) => e.h - (Math.max(emin, v) - emin) / (emax - emin) * e.h;
@@ -184,17 +223,35 @@ function calibrationSettings(d) {
   return c && d && Number.isFinite(d.gain_index) ? {gain: Number(d.gain_index), rate_hz: d.sample_rate_hz, nfft: d.spectrum.db.length, samples: d.samples, detector: c.detector, bw_mhz: Number(c.bw_mhz), bits: d.bits} : null;
 }
 function sameCalibrationSettings(a,b) { return !!(a && b && ['gain','rate_hz','nfft','samples','detector','bw_mhz','bits'].every(k => a[k] === b[k])); }
-function matchingCalibrationPoints(d) { const settings=calibrationSettings(d); return (state.calibration?.points || []).filter(p => sameCalibrationSettings(settings, p.settings || state.calibration.settings)); }
+function matchingCalibrationSettings(settings) { return (state.calibration?.points || []).filter(p => sameCalibrationSettings(settings, p.settings || state.calibration.settings)); }
+function matchingCalibrationPoints(d) { return matchingCalibrationSettings(calibrationSettings(d)); }
 function calibrationMatches(d) { return matchingCalibrationPoints(d).length > 0; }
+function calibrationMissingReason(settings, agc) {
+  if (!state.calibration?.points?.length) return 'No calibration saved in this browser.';
+  if (!settings) return 'Capture settings are unavailable.';
+  const keys = ['rate_hz','nfft','samples','detector','bw_mhz','bits'];
+  const matching = state.calibration.points.filter(p => {
+    const pointSettings = p.settings || state.calibration.settings;
+    return pointSettings && keys.every(k => settings[k] === pointSettings[k]);
+  });
+  if (!matching.length) return 'Rate, FFT, samples, detector, bandwidth or bit depth differs from calibration.';
+  const gains = [...new Set(matching.map(p => (p.settings || state.calibration.settings).gain))].sort((a,b)=>a-b);
+  const shown = gains.slice(0, 8).join(', '), remaining = gains.length > 8 ? ` +${gains.length - 8} more` : '';
+  return `Gain ${settings.gain} is uncalibrated${agc ? ' (AGC varies)' : ''}. Calibrated gains: ${shown}${remaining}.`;
+}
+function calibrationAxisNote(d, active) {
+  if (active) return d?.agc ? 'dBm uses capture-start gain; AGC may change during capture.' : 'dBm scale uses the center-frequency calibration.';
+  return `dBm unavailable: ${calibrationMissingReason(calibrationSettings(d), d?.agc)}`;
+}
 function validCalibration(c) {
   const validSettings = s => s && ['gain','rate_hz','nfft','samples','bw_mhz','bits'].every(k => Number.isFinite(s[k])) && ['average','peak'].includes(s.detector);
   return c?.version === 1 && Array.isArray(c.points) && c.points.length > 0 && c.points.length <= 1000 && c.points.every(p => validSettings(p.settings || c.settings) && Number.isFinite(p.hz) && p.hz > 0 && Number.isFinite(p.measured_dbfs) && Number.isFinite(p.actual_dbm));
 }
 function storeCalibration() { try { if (state.calibration) localStorage.setItem(calibrationKey, JSON.stringify(state.calibration)); else localStorage.removeItem(calibrationKey); } catch (_) {} }
 function loadCalibration() { try { const c = JSON.parse(localStorage.getItem(calibrationKey)); if (validCalibration(c)) { c.points.sort((a,b) => a.hz-b.hz); state.calibration = c; } } catch (_) {} renderCalibrationTable(); }
-function calibrationOffsets() {
+function calibrationOffsets(settings=calibrationSettings(state.live)) {
   const groups = new Map();
-  for (const p of matchingCalibrationPoints(state.live)) { const group=groups.get(p.hz) || []; group.push(p.actual_dbm-p.measured_dbfs); groups.set(p.hz,group); }
+  for (const p of matchingCalibrationSettings(settings)) { const group=groups.get(p.hz) || []; group.push(p.actual_dbm-p.measured_dbfs); groups.set(p.hz,group); }
   return [...groups].map(([hz,values]) => ({hz, offset:values.reduce((a,b)=>a+b,0)/values.length})).sort((a,b)=>a.hz-b.hz);
 }
 function calibrationOffset(hz, points=calibrationOffsets()) {
@@ -211,43 +268,65 @@ function renderCalibrationTable() {
     const cell = document.createElement('td'), button = document.createElement('button'); button.className = 'secondary'; button.textContent = 'Remove'; button.onclick = () => { state.calibration.points = state.calibration.points.filter(p => p !== point); if (!state.calibration.points.length) state.calibration = null; storeCalibration(); renderCalibrationTable(); renderLive(); renderCalibration(); }; cell.appendChild(button); row.appendChild(cell); body.appendChild(row);
   }
   const d = state.live;
-  $('#calibration-status').textContent = !state.calibration ? 'No calibration loaded. Spectrum is in dBFS.' : calibrationMatches(d) ? 'Active. Matching points interpolate by frequency; repeated frequencies are averaged. Outside points, the nearest offset is used.' : 'Inactive: select the gain, rate, samples, detector, bandwidth and format used for these points. AGC can change the gain.';
+  $('#calibration-status').textContent = !state.calibration ? 'No calibration' : calibrationMatches(d) ? `Calibration active · gain ${d.gain_index}` : `Calibration inactive${Number.isFinite(d?.gain_index) ? ` · gain ${d.gain_index}` : ''}`;
+  $('#calibration-status').title = calibrationAxisNote(d, calibrationMatches(d));
+  renderFrames(); renderChannelResponse();
 }
 function renderCalibration() {
   const status = $('#calibration-status');
-  status.textContent = !state.calibration ? 'No calibration loaded. Spectrum is in dBFS.' : calibrationMatches(state.live) ? 'Active. Matching points interpolate by frequency; repeated frequencies are averaged. Outside points, the nearest offset is used.' : 'Inactive: select the gain, rate, samples, detector, bandwidth and format used for these points. AGC can change the gain.';
+  status.textContent = !state.calibration ? 'No calibration' : calibrationMatches(state.live) ? `Calibration active · gain ${state.live.gain_index}` : `Calibration inactive${Number.isFinite(state.live?.gain_index) ? ` · gain ${state.live.gain_index}` : ''}`;
+  status.title = calibrationAxisNote(state.live, calibrationMatches(state.live));
   const d = state.live; if (!d?.spectrum?.db?.length) return;
   const {x,w,h} = canvas('#calibration-spectrum'); if (!w || !h) return;
   x.clearRect(0,0,w,h); grid(x,w,h);
   const s=d.spectrum, n=s.db.length, freq=i=>s.start_hz+i*s.bin_hz, raw=s.db;
   const active=calibrationMatches(d), offsets=active ? calibrationOffsets() : [];
-  const values=active ? raw.map((v,i)=>v+calibrationOffset(freq(i),offsets)) : raw;
-  const min=Math.floor(Math.min(...values)/10)*10-5, max=Math.max(min+10,Math.ceil(Math.max(...values)/10)*10+5), X=i=>i/(n-1)*w, Y=v=>h-(v-min)/(max-min)*h;
-  trace(x, values.map((_,i)=>i), values, X, Y, h, '#36e5d2', '#36e5d222'); yLabels(x,h,min,max,active ? 'dBm' : 'dBFS');
+  const axisOffset=active ? calibrationOffset(d.frequency_hz, offsets) : null;
+  const {min,max}=spectrumScale('calibration', raw, 'dBFS', d), X=i=>i/(n-1)*w, Y=v=>h-(v-min)/(max-min)*h;
+  trace(x, raw.map((_,i)=>i), raw, X, Y, h, '#36e5d2', '#36e5d222');
+  spectrumAxisLabels(x,w,h,min,max,axisOffset);
+  spectrumFrequencyLabels(x,w,h,freq(0),freq(n-1));
   let peak=0; for (let i=1;i<n;i++) if (raw[i]>raw[peak]) peak=i;
-  x.fillStyle='#ff6477'; x.beginPath(); x.arc(X(peak),Y(values[peak]),4,0,7); x.fill();
-  x.font='12px monospace'; x.textAlign='right'; x.textBaseline='top'; x.fillStyle='#e8f0f4';
-  x.fillText(`Peak ${mhz(freq(peak))} · ${raw[peak].toFixed(1)} dBFS`,w-10,10);
-  x.fillText(active ? `Calibrated ${values[peak].toFixed(1)} dBm` : 'Calibrated dBm unavailable for current settings',w-10,27);
+  x.fillStyle='#ff6477'; x.beginPath(); x.arc(X(peak),Y(raw[peak]),4,0,7); x.fill();
+  x.font='12px monospace'; x.textAlign='center'; x.textBaseline='top'; x.fillStyle='#e8f0f4';
+  const nearCenter = Math.abs(freq(peak) - d.frequency_hz) < 500000;
+  x.fillText(`${nearCenter ? 'Center peak (may be DC spur)' : 'Peak'} ${mhz(freq(peak))} · ${raw[peak].toFixed(1)} dBFS`,w/2,10);
+  x.fillText(active ? `Calibrated ${(raw[peak]+calibrationOffset(freq(peak),offsets)).toFixed(1)} dBm` : 'Calibrated dBm unavailable for current settings',w/2,27);
   x.textAlign='start'; x.textBaseline='alphabetic';
-  for (const p of matchingCalibrationPoints(d)) { const i=(p.hz-s.start_hz)/s.bin_hz; if (i>=0 && i<n) { x.fillStyle='#ffbf5f'; x.beginPath(); x.arc(X(i),Y(p.measured_dbfs+(active ? calibrationOffset(p.hz,offsets) : 0)),5,0,7); x.fill(); } }
+  for (const p of matchingCalibrationPoints(d)) { const i=(p.hz-s.start_hz)/s.bin_hz; if (i>=0 && i<n) { x.fillStyle='#ffbf5f'; x.beginPath(); x.arc(X(i),Y(p.measured_dbfs),5,0,7); x.fill(); } }
+  $('#calibration-axis-note').textContent=calibrationAxisNote(d, active);
+  $('#calibration-axis-note').title=$('#calibration-axis-note').textContent;
   $('#calibration-lo').textContent=mhz(freq(0)); $('#calibration-hi').textContent=mhz(freq(n-1));
 }
-let autoTone = null;
+function calibrationToneIndex(s) {
+  const n = s.db.length, middle = Math.floor(n / 2);
+  const centerGuard = Math.max(2, Math.ceil(500000 / s.bin_hz));
+  let best = -1;
+  for (let i = 2; i < n - 2; i++) {
+    if (Math.abs(i - middle) <= centerGuard || !Number.isFinite(s.db[i])) continue;
+    if (best < 0 || s.db[i] > s.db[best]) best = i;
+  }
+  return best;
+}
 $('#calibration-auto').onclick = () => {
   const s = state.live?.spectrum;
   if (state.status?.mode !== 'live' || !s?.db?.length) { toast('Start live capture to calibrate'); return; }
-  let peak = 0; for (let i = 1; i < s.db.length; i++) if (s.db[i] > s.db[peak]) peak = i;
-  autoTone = s.start_hz + peak * s.bin_hz;
-  $('#calibration-auto-tone').textContent = `Strongest tone: ${mhz(autoTone)}. Keep the tone steady throughout the sweep.`;
+  const peak = calibrationToneIndex(s);
+  if (peak < 0) { $('#calibration-auto-progress').textContent = 'No usable spectrum bins. Set a tone away from the center frequency.'; return; }
+  const tone = s.start_hz + peak * s.bin_hz;
+  $('#calibration-auto-frequency').value = String(tone / 1e6);
+  $('#calibration-auto-tone').textContent = `Suggested peak outside the center spur: ${mhz(tone)}. Set this field to your signal generator frequency before starting.`;
   $('#calibration-auto-power').value = ''; $('#calibration-auto-form').hidden = false; $('#calibration-auto-power').focus();
 };
 $('#calibration-auto-close').onclick = () => { $('#calibration-auto-form').hidden = true; };
 $('#calibration-auto-form').onsubmit = e => {
-  e.preventDefault(); const value = $('#calibration-auto-power').value;
-  if (!value.trim() || !Number.isFinite(Number(value)) || !Number.isFinite(autoTone)) { toast('Enter a valid tone power'); return; }
+  e.preventDefault(); const value = $('#calibration-auto-power').value, frequency = $('#calibration-auto-frequency').value;
+  const s = state.live?.spectrum, tone = Number(frequency) * 1e6;
+  if (!value.trim() || !Number.isFinite(Number(value)) || !frequency.trim() || !Number.isFinite(tone) || !s?.db?.length) { $('#calibration-auto-tone').textContent = 'Enter a valid tone power and frequency with live capture running.'; return; }
+  const index = Math.round((tone - s.start_hz) / s.bin_hz), middle = Math.floor(s.db.length / 2);
+  if (index < 4 || index >= s.db.length - 4 || Math.abs(index - middle) <= 4) { $('#calibration-auto-tone').textContent = 'Tone must be within the spectrum and away from the center frequency (DC).'; return; }
   if (ws?.readyState !== WebSocket.OPEN) { toast('Host disconnected'); return; }
-  send({op:'calibration.start', power_dbm:Number(value), tone_hz:autoTone});
+  send({op:'calibration.start', power_dbm:Number(value), tone_hz:tone});
   $('#calibration-auto-form').hidden = true; $('#calibration-auto-progress').textContent = 'Starting gain sweep…';
 };
 $('#calibration-auto-cancel').onclick = () => send({op:'calibration.cancel'});
@@ -334,6 +413,15 @@ function visibleFrames() {
   return all.filter(matchesFilters);
 }
 function selectFrame(f) { state.selectedFrame = f; selectPoints('frame'); renderFrames(); }
+function frameCalibrationOffset(frame) {
+  if (!frame?.calibration_settings || !Number.isFinite(frame.frequency_hz)) return null;
+  const offsets = calibrationOffsets(frame.calibration_settings);
+  return offsets.length ? calibrationOffset(frame.frequency_hz, offsets) : null;
+}
+function framePowerText(value, offset) {
+  if (!Number.isFinite(value)) return 'Unavailable';
+  return `${value.toFixed(2)} dBFS${Number.isFinite(offset) ? ` (${(value + offset).toFixed(1)} dBm)` : ''}`;
+}
 function renderFrames() {
   const list = visibleFrames();
   const allCount = state.frames.length + state.verifiedFrames.length;
@@ -361,8 +449,13 @@ function renderFrames() {
   $('#frame-status').textContent = f ? [f.reason || f.status || 'Preamble candidate; frame not decoded.', f.fcs_ok ? f.evm_warning : f.training_warning].filter(Boolean).join(' ') : 'Decoded frame fields appear when available.';
   $('#frame-mpdu').textContent = f?.mpdu_hex || 'Not decoded';
   $('#frame-gain').textContent = Number.isFinite(f?.gain_index) ? `${f.gain_index} (${f.agc === true ? 'AGC' : f.agc === false ? 'manual' : 'mode unknown'}; capture start)` : 'Unavailable';
-  $('#frame-dbm').textContent = Number.isFinite(f?.frame_mean_dbm) ? `${f.frame_mean_dbm.toFixed(2)} dBm` : 'Unavailable';
-  for (const [id, key] of [['peak', 'frame_peak_dbfs'], ['mean', 'frame_mean_dbfs']]) $(`#frame-${id}`).textContent = Number.isFinite(f?.[key]) ? `${f[key].toFixed(2)} dBFS` : 'Unavailable';
+  const frameOffsets = f?.calibration_settings ? calibrationOffsets(f.calibration_settings) : [];
+  const frameOffset = frameCalibrationOffset(f);
+  const framePower = f?.fcs_ok && Number.isFinite(f.frame_rssi_dbfs) && Number.isFinite(frameOffset) && typeof f.frame_clipped === 'boolean';
+  $('#frame-dbm').textContent = framePower ? `${(f.frame_rssi_dbfs + frameOffset).toFixed(1)} dBm${f.frame_clipped ? ' ⚠' : ''}` : 'Unavailable';
+  const outsideFrameCal = framePower && (f.frequency_hz < frameOffsets[0].hz || f.frequency_hz > frameOffsets[frameOffsets.length - 1].hz);
+  $('#frame-rssi-note').textContent = framePower ? `${f.frame_clipped ? 'Clipped samples: this estimate may be inaccurate. ' : ''}${f.agc ? 'Uses capture-start gain; AGC may change during the frame.' : 'Uses capture-start gain.'} Includes noise and interference.${outsideFrameCal ? ' Using the nearest calibration frequency.' : ''}` : !f ? '' : !Number.isFinite(f.frame_rssi_dbfs) ? 'RSSI requires a complete decoded OFDM frame.' : !f.calibration_settings ? 'RSSI unavailable: capture settings were not recorded.' : typeof f.frame_clipped !== 'boolean' ? 'RSSI unavailable: frame clipping status was not recorded.' : `RSSI unavailable: ${calibrationMissingReason(f.calibration_settings, f.agc)}`;
+  for (const [id, key] of [['peak', 'frame_peak_dbfs'], ['mean', 'frame_mean_dbfs']]) $(`#frame-${id}`).textContent = framePowerText(f?.[key], frameOffset);
   const fields = ['frame_type', 'frame_subtype', 'to_ds', 'from_ds', 'protected', 'sequence', 'fragment', 'header_length', 'addr4'];
   $('#frame-decoded').textContent = f?.fcs_ok ? fields.filter(k => f[k] !== undefined && f[k] !== null).map(k => `${k.replaceAll('_', ' ')}: ${f[k]}`).join('\n') || 'No additional fields' : 'Not decoded';
 }
@@ -445,11 +538,12 @@ function renderChannelResponse() {
 function renderFrameWaveform(frame) {
   const fft = state.framePlot === 'fft', values = fft ? frame?.frame_spectrum_db : frame?.frame_envelope_db;
   const {x,w,h} = canvas('#channel-canvas'); x.clearRect(0,0,w,h); grid(x,w,h);
-  $('#channel-note').textContent = fft ? 'Mean spectral power across the complete decoded frame · dBFS (relative).' : 'Peak power per time bucket · dBFS.';
+  const offset = fft ? null : frameCalibrationOffset(frame);
+  $('#channel-note').textContent = fft ? 'Mean spectral power across the complete decoded frame · dBFS (relative).' : Number.isFinite(offset) ? `Peak power per time bucket; dBm is estimated using capture-start gain.${frame?.agc ? ' AGC may change during the frame.' : ''}${frame?.frame_clipped ? ' Samples clipped.' : ''}` : 'Peak power per time bucket · dBFS. dBm requires matching calibration.';
   $('#plot-scale').textContent = fft ? `−${(frame?.sample_rate_hz || 0)/2e6} MHz                                +${(frame?.sample_rate_hz || 0)/2e6} MHz` : `0 µs                                ${frame?.frame_duration_us ?? '—'} µs`;
   if (!Array.isArray(values) || values.length < 2) { $('#channel-meta').textContent = 'Complete frame waveform unavailable'; return; }
   const min = Math.floor(Math.min(...values)/10)*10, max = Math.max(min+10, Math.ceil(Math.max(...values)/10)*10);
-  trace(x, values.map((_,i)=>i), values, i=>i/(values.length-1)*w, v=>h-(v-min)/(max-min)*h, h, '#36e5d2'); yLabels(x,h,min,max);
+  trace(x, values.map((_,i)=>i), values, i=>i/(values.length-1)*w, v=>h-(v-min)/(max-min)*h, h, '#36e5d2'); spectrumAxisLabels(x,w,h,min,max,offset);
   $('#channel-meta').textContent = `Capture ${frame.capture_id} · ${frame.frame_duration_us} µs`;
 }
 function selectPoints(which) { state.points = which; $$('[data-points]').forEach((b) => b.classList.toggle('active', b.dataset.points === which)); renderConstellation(); renderChannelResponse(); }

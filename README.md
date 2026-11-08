@@ -90,8 +90,12 @@ ctest --test-dir build/native --output-on-failure
 ```
 
 The Calibration page can sweep manual gain indices using a steady tone at
-known input power. It skips clipped or weak captures and restores the prior
-radio settings. The tone must remain present throughout the sweep.
+known input power. For each gain it takes nine captures, rejects clipped or
+weak captures, and estimates the tone level from a consensus of consistent
+measurements. It restores the prior radio settings when finished; keep the
+tone present throughout the sweep. Frame RSSI is an estimate using the
+capture-start gain and a matching calibration point. AGC changes and clipped
+samples can make that estimate inaccurate.
 
 The Python host remains available as an alternative:
 

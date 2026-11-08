@@ -1,6 +1,6 @@
 """End-to-end native service smoke test against an isolated UDP radio emulator."""
 import asyncio,json,socket,struct,subprocess,threading,time,urllib.request,zlib,sys,math
-stop=threading.Event();state={'mode':'idle','job':0,'id':1,'fixture':None,'gain':0,'calibration':False}
+stop=threading.Event();state={'mode':'idle','job':0,'id':1,'fixture':None,'gain':0,'calibration':False,'job_id':7,'capture_count':0}
 def control():
  s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind(('127.0.0.1',55022));s.settimeout(.2)
  while not stop.is_set():
@@ -8,7 +8,8 @@ def control():
   except TimeoutError:continue
   rid,cmd=d.decode().strip().split(' ',1);rid=rid.split(':')[1]
   if cmd.startswith('iq_info'): result='kind='+state['mode']+' gain_max=2'
-  elif cmd.startswith('iq_capture'):state['mode']='capture';state['calibration']='count=1' in cmd;result='capture id=7'
+  elif cmd.startswith('iq_capture'):
+   state.update(mode='capture',calibration='count=9' in cmd,job_id=state['job_id']+1,capture_count=0);result=f"capture id={state['job_id']}"
   elif cmd.startswith('iq_sweep'):state.update(mode='sweep',job=11);result='sweep id=11'
   elif cmd.startswith('iq_stop'):state['mode']='idle';result='stop'
   elif cmd.startswith('iq_set gain='):state['gain']=int(cmd.split()[1].split('=')[1]);result='set'
@@ -27,12 +28,16 @@ def capture():
    b=bytearray()
    for i in range(1024):
     a=2*math.pi*80*i/1024
-    b.extend((round(24*math.cos(a))%256,(-round(24*math.sin(a)))%256))
-  n=len(b)//2;idx=state['id'];state['id']+=1; sweep=state['mode']=='sweep';job=11 if sweep else 7
+    amplitude=127 if state['capture_count']==0 else 45 if state['capture_count']==1 else 24
+    b.extend((round(amplitude*math.cos(a))%256,(-round(amplitude*math.sin(a)))%256))
+  n=len(b)//2;idx=state['id'];state['id']+=1; sweep=state['mode']=='sweep';job=11 if sweep else state['job_id']
   for offset in range(0,len(b),1024):
    p=b[offset:offset+1024]; last=offset+len(p)==len(b);flags=(1 if last else 0)|(2|4|16 if sweep and last else 0)
    header=struct.pack('<4sBBBBIIIHHIIIBBHHH',b'WJIQ',2,flags,8,1,idx,n,offset,len(p),44,zlib.crc32(p),2410000,17,state['gain'] if state['calibration'] else 20,0,job,0,1)
    s.sendto(header+p,('239.255.53.1',55303))
+  if state['calibration']:
+   state['capture_count']+=1
+   if state['capture_count']>=9:state['mode']='idle'
   if sweep:state['mode']='idle'
  s.close()
 threading.Thread(target=control,daemon=True).start();threading.Thread(target=capture,daemon=True).start()
@@ -51,7 +56,7 @@ async def run():
     if data['event']==name:return data['data']
   st=await event('status');assert st['mode']=='live';print('status',st['decoder_formats'],st['decoder_backend'])
   data=await event('live');assert data['samples']==1024 and len(data['spectrum']['db'])==1024;print('live',data['capture_id'],data['samples'])
-  await ws.send(json.dumps({'op':'calibration.start','power_dbm':-60,'tone_hz':2410000000+80*40000000/1024})); done=await event('calibration.done');assert not done['error'] and len(done['points'])==3,done;print('calibration all gains and restoration ok')
+  await ws.send(json.dumps({'op':'calibration.start','power_dbm':-60,'tone_hz':2410000000+79*40000000/1024})); done=await event('calibration.done');assert not done['error'] and len(done['points'])==3,done;assert all(p['measurements']==9 and p['inliers']==7 and abs(p['measured_dbfs']-20*math.log10(24*4/511))<.2 for p in done['points']),done;print('calibration rejects clipping and outliers; restores live')
   await ws.send(json.dumps({'op':'snapshot'}));snap=await event('snapshot');assert snap['samples']==1024
   assert len(urllib.request.urlopen('http://127.0.0.1:58082/capture/snapshot.cf32').read())==8192;print('snapshot ok')
   state['fixture']='dot11a_24M_40msps_iq8'
@@ -68,6 +73,8 @@ async def run():
   assert not header.get('fcs_ok',False) and payload['fcs_ok']
   assert payload['constellation'] and payload['training_constellation'] and payload['channel_estimate']
   assert payload['frame_spectrum_db'] and payload['frame_envelope_db'] and payload['frame_duration_us'] > 0
+  assert math.isfinite(payload['frame_rssi_dbfs']) and isinstance(payload['frame_clipped'],bool)
+  assert payload['calibration_settings']['gain']==payload['gain_index'] and payload['calibration_settings']['samples']==16380
   print('OFDM SIGNAL header and independently decoded FCS-verified payload ok')
   state['fixture']='dsss-110-short-clean-48-40msps'
   while True:

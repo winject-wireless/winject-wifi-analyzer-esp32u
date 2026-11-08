@@ -54,6 +54,8 @@ def frame_waveform(samples, start, end, sample_rate_hz):
     spectrum = np.mean(spectra, axis=0)
     buckets = np.array_split(power, min(256, len(power)))
     return {"frame_peak_dbfs": db(np.max(power)), "frame_mean_dbfs": db(np.mean(power)),
+            "frame_rssi_dbfs": db(np.mean(np.abs(x - x.mean()) ** 2)),
+            "frame_clipped": bool(np.any((np.abs(x.real) >= dsp.CLIP) | (np.abs(x.imag) >= dsp.CLIP))),
             "frame_spectrum_db": [db(v) for v in spectrum],
             "frame_envelope_db": [db(np.max(b)) for b in buckets],
             "frame_duration_us": round(len(x) / sample_rate_hz * 1e6, 2)}
@@ -191,31 +193,45 @@ class Analyzer:
                 await self.link.request(f"iq_set gain={gain}")
                 while not self.calibration_queue.empty():
                     self.calibration_queue.get_nowait()
-                reply = await self.link.request(f"iq_capture n={int(c['n'])} rate={int(c['rate_hz'])} bits={int(c['bits'])} count=1 dst={self.link.dst}")
+                attempts, tolerance = 9, 1.5
+                reply = await self.link.request(f"iq_capture n={int(c['n'])} rate={int(c['rate_hz'])} bits={int(c['bits'])} count={attempts} dst={self.link.dst}")
                 job = int(next(part.split("=", 1)[1] for part in reply[0].split() if part.startswith("id=")))
-                deadline = asyncio.get_running_loop().time() + 5
-                while True:
-                    cap = await asyncio.wait_for(self.calibration_queue.get(), max(0, deadline - asyncio.get_running_loop().time()))
-                    if cap.job_id == job:
-                        break
-                if cap.agc or cap.gain_index != gain:
-                    skipped.append({"gain": gain, "reason": "reported gain does not match"})
-                    continue
-                x = cap.samples()
-                freqs, spectrum = dsp.psd(x, cap.sample_rate_hz, int(c['nfft']), c['detector'] == 'peak')
-                index = round((tone_hz - cap.frequency_hz - float(freqs[0])) / (cap.sample_rate_hz / int(c['nfft'])))
-                if not 2 <= index < len(spectrum) - 2 or abs(index - len(spectrum)//2) <= 2:
-                    raise ValueError("Tone is too close to DC or the spectrum edge")
-                noise_bins = np.ones(len(spectrum), dtype=bool)
-                noise_bins[max(0, index-3):index+4] = False
-                noise_bins[len(spectrum)//2-2:len(spectrum)//2+3] = False
-                if dsp.power_stats(x, cap.sample_rate_hz).clipped > 0:
-                    skipped.append({"gain": gain, "reason": "clipped"})
-                elif float(spectrum[index]) < float(np.median(spectrum[noise_bins])) + 10:
-                    skipped.append({"gain": gain, "reason": "tone below noise threshold"})
-                else:
+                deadline = asyncio.get_running_loop().time() + 8
+                levels, seen, settings = [], set(), None
+                rejected = {"clipped": 0, "weak": 0, "gain_mismatch": 0}
+                for _ in range(attempts):
+                    while True:
+                        cap = await asyncio.wait_for(self.calibration_queue.get(), max(0, deadline - asyncio.get_running_loop().time()))
+                        if cap.job_id == job and cap.capture_id not in seen:
+                            seen.add(cap.capture_id)
+                            break
+                    if cap.agc or cap.gain_index != gain:
+                        rejected["gain_mismatch"] += 1
+                        continue
+                    x = cap.samples()
+                    if dsp.power_stats(x, cap.sample_rate_hz).clipped > 0:
+                        rejected["clipped"] += 1
+                        continue
+                    freqs, spectrum = dsp.psd(x, cap.sample_rate_hz, int(c['nfft']), c['detector'] == 'peak')
+                    index = round((tone_hz - cap.frequency_hz - float(freqs[0])) / (cap.sample_rate_hz / int(c['nfft'])))
+                    if not 4 <= index < len(spectrum) - 4 or abs(index - len(spectrum)//2) <= 4:
+                        raise ValueError("Tone is too close to DC or the spectrum edge")
+                    expected = index
+                    index = expected - 2 + int(np.argmax(spectrum[expected-2:expected+3]))
+                    noise_bins = np.ones(len(spectrum), dtype=bool)
+                    noise_bins[max(0, expected-5):min(len(spectrum), expected+6)] = False
+                    noise_bins[len(spectrum)//2-2:len(spectrum)//2+3] = False
+                    if float(spectrum[index]) < float(np.median(spectrum[noise_bins])) + 10:
+                        rejected["weak"] += 1
+                        continue
+                    levels.append(float(spectrum[index]))
                     settings = {"gain": gain, "rate_hz": cap.sample_rate_hz, "nfft": int(c['nfft']), "samples": cap.sample_count, "detector": c['detector'], "bw_mhz": int(c['bw_mhz']), "bits": cap.bits}
-                    points.append({"hz": tone_hz, "measured_dbfs": round(float(spectrum[index]), 2), "actual_dbm": power_dbm, "settings": settings})
+                # Exhaustive one-dimensional RANSAC: each measured level is a candidate model.
+                inliers = max(([v for v in levels if abs(v-model) <= tolerance] for model in levels), key=len, default=[])
+                if len(inliers) < 3 or len(inliers) * 2 < len(levels):
+                    skipped.append({"gain": gain, "reason": "insufficient consistent measurements", "valid": len(levels), "inliers": len(inliers), **rejected})
+                else:
+                    points.append({"hz": tone_hz, "measured_dbfs": round(float(np.median(inliers)), 2), "actual_dbm": power_dbm, "settings": settings, "measurements": attempts, "valid": len(levels), "inliers": len(inliers)})
         except asyncio.CancelledError:
             cancelled = True
         except Exception as exc:
@@ -286,7 +302,8 @@ class Analyzer:
                           "timestamp_us": cap.timestamp_us,
                           "frequency_hz": cap.frequency_hz,
                           "sample_rate_hz": cap.sample_rate_hz,
-                          "gain_index": cap.gain_index, "agc": cap.agc}
+                          "gain_index": cap.gain_index, "agc": cap.agc,
+                          "calibration_settings": {"gain": cap.gain_index, "rate_hz": cap.sample_rate_hz, "nfft": int(self.config["nfft"]), "samples": cap.sample_count, "detector": self.config["detector"], "bw_mhz": cap.bandwidth_mhz, "bits": cap.bits}}
                 self.frame_records.append(record)
                 records.append(record)
                 # The legacy decoder is slower than acquisition. Queue only
