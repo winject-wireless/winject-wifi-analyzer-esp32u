@@ -10,6 +10,7 @@ import asyncio
 from collections import deque
 import json
 import logging
+import math
 import mimetypes
 import time
 from dataclasses import asdict
@@ -37,6 +38,26 @@ def _points(x: np.ndarray) -> list[list[float]]:
     return np.round(np.stack([x.real, x.imag], axis=1), 4).tolist()
 
 
+
+def frame_waveform(samples, start, end, sample_rate_hz):
+    """Summarize the complete decoded frame interval in normalized ADC units."""
+    x = np.asarray(samples)[max(0, start):min(len(samples), end)]
+    if start < 0 or len(x) < 2 or end > len(samples):
+        return {}
+    power = np.abs(x) ** 2
+    db = lambda value: round(float(10 * np.log10(max(float(value), 1e-12))), 2)
+    # Average spectral power over the entire interval, rather than an FFT of
+    # just its first window. Keep the wire representation bounded.
+    nfft = min(512, len(x))
+    windows = [x[i:i+nfft] for i in range(0, len(x), nfft)]
+    spectra = [np.abs(np.fft.fftshift(np.fft.fft(w * np.hanning(len(w)), n=nfft))) ** 2 / max(np.sum(np.hanning(len(w)) ** 2), 1e-12) for w in windows if len(w) > 1]
+    spectrum = np.mean(spectra, axis=0)
+    buckets = np.array_split(power, min(256, len(power)))
+    return {"frame_peak_dbfs": db(np.max(power)), "frame_mean_dbfs": db(np.mean(power)),
+            "frame_spectrum_db": [db(v) for v in spectrum],
+            "frame_envelope_db": [db(np.max(b)) for b in buckets],
+            "frame_duration_us": round(len(x) / sample_rate_hz * 1e6, 2)}
+
 class Analyzer:
     def __init__(self, link: RadioLink, ui_hz: float = 12.0) -> None:
         self.link = link
@@ -55,6 +76,9 @@ class Analyzer:
         self.rate_window: list[float] = []
         self.sweep: dict | None = None
         self.resume_live = False
+        self.calibration_task = None
+        self.calibration_owner = None
+        self.calibration_queue = asyncio.Queue(maxsize=16)
         self.frame_queue: asyncio.Queue = asyncio.Queue(maxsize=4)
         self.frame_records: deque[dict] = deque(maxlen=200)
         self.decoded_records: deque[dict] = deque(maxlen=100)
@@ -147,6 +171,70 @@ class Analyzer:
             await self.start_live()
         await self.broadcast({"event": "sweep.done", "data": info})
 
+    async def calibrate_gains(self, power_dbm: float, tone_hz: float) -> None:
+        resume = self.mode == "live"
+        c = self.config.copy()
+        points = []
+        skipped = []
+        error = None
+        cancelled = False
+        try:
+            info = await self.link.info()
+            gain_max = int(info["gain_max"])
+            if not 0 <= gain_max <= 255:
+                raise ValueError("Invalid radio gain range")
+            await self.link.request("iq_stop")
+            self.mode = "calibration"
+            self.frame_generation += 1
+            for gain in range(gain_max + 1):
+                await self.broadcast({"event": "calibration.progress", "data": {"gain": gain, "total": gain_max + 1, "accepted": len(points), "skipped": len(skipped)}})
+                await self.link.request(f"iq_set gain={gain}")
+                while not self.calibration_queue.empty():
+                    self.calibration_queue.get_nowait()
+                reply = await self.link.request(f"iq_capture n={int(c['n'])} rate={int(c['rate_hz'])} bits={int(c['bits'])} count=1 dst={self.link.dst}")
+                job = int(next(part.split("=", 1)[1] for part in reply[0].split() if part.startswith("id=")))
+                deadline = asyncio.get_running_loop().time() + 5
+                while True:
+                    cap = await asyncio.wait_for(self.calibration_queue.get(), max(0, deadline - asyncio.get_running_loop().time()))
+                    if cap.job_id == job:
+                        break
+                if cap.agc or cap.gain_index != gain:
+                    skipped.append({"gain": gain, "reason": "reported gain does not match"})
+                    continue
+                x = cap.samples()
+                freqs, spectrum = dsp.psd(x, cap.sample_rate_hz, int(c['nfft']), c['detector'] == 'peak')
+                index = round((tone_hz - cap.frequency_hz - float(freqs[0])) / (cap.sample_rate_hz / int(c['nfft'])))
+                if not 2 <= index < len(spectrum) - 2 or abs(index - len(spectrum)//2) <= 2:
+                    raise ValueError("Tone is too close to DC or the spectrum edge")
+                noise_bins = np.ones(len(spectrum), dtype=bool)
+                noise_bins[max(0, index-3):index+4] = False
+                noise_bins[len(spectrum)//2-2:len(spectrum)//2+3] = False
+                if dsp.power_stats(x, cap.sample_rate_hz).clipped > 0:
+                    skipped.append({"gain": gain, "reason": "clipped"})
+                elif float(spectrum[index]) < float(np.median(spectrum[noise_bins])) + 10:
+                    skipped.append({"gain": gain, "reason": "tone below noise threshold"})
+                else:
+                    settings = {"gain": gain, "rate_hz": cap.sample_rate_hz, "nfft": int(c['nfft']), "samples": cap.sample_count, "detector": c['detector'], "bw_mhz": int(c['bw_mhz']), "bits": cap.bits}
+                    points.append({"hz": tone_hz, "measured_dbfs": round(float(spectrum[index]), 2), "actual_dbm": power_dbm, "settings": settings})
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception as exc:
+            log.exception("Gain calibration failed")
+            error = str(exc) or type(exc).__name__
+        finally:
+            try:
+                await self.link.request("iq_stop")
+                await self.apply_radio()
+                self.mode = "idle"
+                if resume:
+                    await self.start_live()
+            except Exception as exc:
+                error = f"Could not restore radio: {exc}"
+                self.mode = "idle"
+            self.calibration_task = None
+            self.calibration_owner = None
+            await self.broadcast({"event": "calibration.done", "data": {"points": points if not error and not cancelled else [], "skipped": skipped, "error": error, "cancelled": cancelled}})
+
     # --- captures -----------------------------------------------------------------
 
     def on_capture(self, cap: Capture) -> None:
@@ -154,6 +242,11 @@ class Analyzer:
         self.rate_window.append(now)
         if self.mode == "sweep" and self.sweep is not None and cap.job_id == self.sweep["job"]:
             self._sweep_capture(cap)
+            return
+        if self.mode == "calibration":
+            if self.calibration_queue.full():
+                self.calibration_queue.get_nowait()
+            self.calibration_queue.put_nowait(cap)
             return
         self.latest = cap
         if self.mode == "live" and cap.sample_rate_hz == 40_000_000:
@@ -192,7 +285,8 @@ class Analyzer:
                 record = {**frame, "capture_id": cap.capture_id,
                           "timestamp_us": cap.timestamp_us,
                           "frequency_hz": cap.frequency_hz,
-                          "sample_rate_hz": cap.sample_rate_hz}
+                          "sample_rate_hz": cap.sample_rate_hz,
+                          "gain_index": cap.gain_index, "agc": cap.agc}
                 self.frame_records.append(record)
                 records.append(record)
                 # The legacy decoder is slower than acquisition. Queue only
@@ -223,6 +317,8 @@ class Analyzer:
                 continue
             self.decoder_decoded += 1
             record.update(result)
+            if "frame_start_sample" in result and "end_sample" in result:
+                record.update(frame_waveform(cap.samples(), result["frame_start_sample"], result["end_sample"], cap.sample_rate_hz))
             record["status"] = "FCS verified"
             record["reason"] = f"Legacy {result.get('rate_mbps', '')} Mbit/s OFDM MPDU decoded; FCS verified."
             self.decoded_records.append(record)
@@ -252,6 +348,7 @@ class Analyzer:
                           "timestamp_us": cap.timestamp_us,
                           "frequency_hz": cap.frequency_hz,
                           "sample_rate_hz": cap.sample_rate_hz,
+                          "gain_index": cap.gain_index, "agc": cap.agc,
                           "rate_mbps": frame["rate_bps"] / 1e6,
                           "status": "FCS verified"}
                 self.dsss_decoded += 1
@@ -348,7 +445,7 @@ class Analyzer:
                     "frames": list(records.values()), "history": True}}))
             async for raw in ws:
                 try:
-                    await self.command(json.loads(raw))
+                    await self.command(json.loads(raw), ws)
                 except (MPlaneError, ValueError, KeyError) as exc:
                     await ws.send(json.dumps({"event": "error", "data": {"message": str(exc)}}))
                 await ws.send(json.dumps(self.status()))
@@ -356,10 +453,28 @@ class Analyzer:
             pass
         finally:
             self.clients.discard(ws)
+            if self.calibration_owner is ws and self.calibration_task:
+                self.calibration_task.cancel()
 
-    async def command(self, msg: dict) -> None:
+    async def command(self, msg: dict, owner=None) -> None:
         op = msg.get("op")
-        if op == "config":
+        if self.calibration_task:
+            if op == "calibration.cancel" and owner is self.calibration_owner:
+                self.calibration_task.cancel()
+                return
+            raise ValueError("Calibration is in progress")
+        if op == "calibration.start":
+            power, tone = float(msg["power_dbm"]), float(msg["tone_hz"])
+            if not math.isfinite(power) or not math.isfinite(tone):
+                raise ValueError("Invalid tone power or frequency")
+            if self.mode != "live" or self.latest is None:
+                raise ValueError("Start live capture before calibrating")
+            if abs(tone - self.latest.frequency_hz) >= self.latest.sample_rate_hz / 2:
+                raise ValueError("Tone is outside the capture bandwidth")
+            self.calibration_owner = owner
+            self.calibration_task = asyncio.create_task(self.calibrate_gains(power, tone))
+            await asyncio.sleep(0)
+        elif op == "config":
             for k in ("freq_mhz", "gain", "bw_mhz", "rate_hz", "n", "bits", "nfft",
                       "average", "detector"):
                 if k in msg:
@@ -411,7 +526,7 @@ class Analyzer:
                 last_status = now
                 try:
                     self.radio_info = await self.link.info()
-                    if self.want_live and self.mode != "sweep" and self.radio_info.get("kind") == "idle":
+                    if self.want_live and self.mode not in ("sweep", "calibration") and not self.calibration_task and self.radio_info.get("kind") == "idle":
                         log.info("radio is idle; restoring the requested live stream")
                         await self.apply_radio()
                         if self.want_live:

@@ -66,6 +66,7 @@ See [docs/radio-server.md](docs/radio-server.md) and
 | `components/analyzer_iq` | ESP32 RF dump capture/tuning (GPLv3, from ESP-SDR) |
 | `src/winject-esp32` | Firmware: `iq/`, `net/`, `mplane/`, settings |
 | `host/winject_wifi_analyzer` | Host server, DSP, mplane client, WJIQ v2 reassembler |
+| `native` | Standalone C++ host server and decoder |
 | `web` | Browser app served by the host |
 | `tests`, `src/host_test` | Python and C++ host tests |
 
@@ -77,6 +78,22 @@ pio run -e lan-module -t upload --upload-port /dev/ttyUSB1
 ```
 
 ## Host
+
+The standalone C++ host builds with CMake, a C++17 compiler, OpenSSL,
+zlib, and nlohmann-json. From the repository root:
+
+```sh
+cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release
+cmake --build build/native -j
+ctest --test-dir build/native --output-on-failure
+./build/native/winject-wifi-analyzer-cpp --host 192.168.253.14 --http-host 0.0.0.0 --http-port 8081 --web-dir web
+```
+
+The Calibration page can sweep manual gain indices using a steady tone at
+known input power. It skips clipped or weak captures and restores the prior
+radio settings. The tone must remain present throughout the sweep.
+
+The Python host remains available as an alternative:
 
 System Python with numpy and websockets (10.x):
 

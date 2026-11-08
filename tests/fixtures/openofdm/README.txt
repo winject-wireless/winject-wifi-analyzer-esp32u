@@ -10,3 +10,8 @@ The dot11a_*mbps_qos_data_*.dat vectors are from OpenOFDM commit ea638eb,
 testing_inputs/conducted/. They contain 20 MS/s little-endian interleaved
 signed 16-bit I/Q captured over a conducted RF path. The decoder tests confirm
 FCS-valid frames at the expected rates after interpolation to 40 MS/s.
+
+dot11a_24M_40msps_iq8.cs8 is generated from the adjacent 24 Mbps conducted
+RF fixture by resampling to 40 MS/s, normalizing by 32768, quantizing signed
+I/Q to 8 bits and taking the first 16380 samples. It exercises the WJIQ-to-
+decoder integration test.

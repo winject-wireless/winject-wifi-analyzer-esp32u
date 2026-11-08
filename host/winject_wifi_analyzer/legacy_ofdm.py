@@ -173,7 +173,7 @@ def decode_legacy_ofdm(samples: np.ndarray, short_start: int, long_start: int,
             return {**mpdu,'modulation':_MODULATIONS[n_bpsc],'rate_mbps':rate,'evm_percent':evm_value,
                     'evm_scope':'data-field decisions including SERVICE and padding; not standards-calibrated','evm_warning':warning,
                     'payload_clipped_fraction':round(clipped,4),'constellation':[[round(float(v.real),4),round(float(v.imag),4)] for v in q[:1024]],
-                    'ltf_start_sample':first*2+decimation_phase,'ltf_match':round(score,4),'phy':'802.11 legacy OFDM'}
+                    'frame_start_sample':first*2+decimation_phase-384, 'end_sample':raw_end, 'ltf_start_sample':first*2+decimation_phase,'ltf_match':round(score,4),'phy':'802.11 legacy OFDM'}
     return None
 
 

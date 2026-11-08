@@ -6,3 +6,83 @@
 .device-strip{flex-wrap:wrap;row-gap:10px}
 .subtitle{color:var(--muted);margin:7px 0 0;font-size:12px}.note{color:var(--muted);font-size:11px;line-height:1.6}.secondary{display:inline-block;border:1px solid #294453;background:#13232d;color:#b8d5df;border-radius:5px;padding:8px 12px;cursor:pointer;text-decoration:none;font:11px var(--mono)}.secondary:hover{border-color:var(--cyan);color:var(--cyan)}.frames-panel{margin-top:18px}.frames-heading{display:flex;justify-content:space-between;align-items:center;padding:19px 20px 8px}.frames-heading h2{font-size:16px;margin:5px 0}.frames-heading p:not(.eyebrow){font-size:11px;color:var(--muted);margin:5px 0}.frame-count{color:var(--cyan);font:11px var(--mono);white-space:nowrap}.frame-filters{display:flex;gap:12px;align-items:end;padding:12px 20px 17px;border-bottom:1px solid var(--line);flex-wrap:wrap}.frame-filters label{display:grid;gap:5px;color:var(--muted);font-size:10px;letter-spacing:.06em;text-transform:uppercase}.frame-filters input{width:180px}.frame-filters #filter-error{color:var(--red);font:11px var(--mono)}.frame-layout{display:grid;grid-template-columns:minmax(400px,1.5fr) minmax(280px,1fr)}.frame-detail{border-left:1px solid var(--line);padding:20px}.frame-detail h3{font-size:17px;margin:8px 0 20px}.frame-detail h4{color:var(--muted);font-size:10px;letter-spacing:.09em;text-transform:uppercase;margin:22px 0 8px}.frame-detail pre{margin:0;min-height:56px}.detail-grid{display:grid;grid-template-columns:1fr 1.5fr;gap:11px;font-size:11px}.detail-grid span{color:var(--muted)}.detail-grid strong{font:11px var(--mono);overflow-wrap:anywhere}.empty{padding:28px;text-align:center;color:var(--muted);font-size:12px}.table-scroll{max-height:400px}.stats-grid #c-evm{font-size:15px}@media(max-width:900px){.frame-layout{grid-template-columns:1fr}.frame-detail{border-left:0;border-top:1px solid var(--line)}}
 .channel-panel{margin-top:18px;padding-bottom:6px}.channel-panel canvas{display:block;width:100%;height:220px}.channel-note{margin:0;padding:0 18px 10px;color:var(--muted);font-size:11px}
+.analyzer-layout{display:grid;grid-template-columns:minmax(240px,300px) minmax(380px,1fr) minmax(250px,320px);gap:16px;align-items:start}.capture-column,.plots-column{min-width:0}.device-strip{padding:16px;gap:10px;display:grid;grid-template-columns:1fr 1fr}.device-strip h2{grid-column:1/-1;margin:0 0 4px;font-size:13px}.device-strip label{display:flex;flex-wrap:wrap;gap:4px}.device-strip label input,.device-strip label select{max-width:100%}.device-strip .metric{margin:0;padding-left:8px}.frames-panel{margin-top:16px}.frames-heading{display:block;padding:16px}.frames-heading p{line-height:1.5}.frame-filters{display:grid;padding:12px 16px}.frame-filters label.check{display:flex}.frame-filters input[type=checkbox]{width:auto;height:auto}.frame-filters input{width:100%}.table-scroll{max-height:480px}.data-plot{padding:0 12px 24px}.data-plot canvas{height: min(52vh, 500px);min-height:300px}.data-plot .panel-title{margin:0 -12px}.plot-bottom{display:grid;grid-template-columns:minmax(200px,1fr) minmax(260px,1.8fr);gap:16px;margin-top:16px}.training-plot{position:relative;padding:10px 16px 24px}.training-plot canvas{width:100%;height:200px;display:block}.channel-panel{margin:0;padding:10px}.channel-panel canvas{height:180px}.plot-tabs{width:max-content;max-width:100%;flex-wrap:wrap}.plot-tabs button{cursor:pointer}.channel-panel #channel-meta{display:block;color:var(--muted);font:10px var(--mono);padding:8px}.frame-detail{border-left:1px solid var(--line)}.frame-detail pre{min-height:40px;white-space:pre-wrap}.frame-detail #frame-decoded{word-break:normal}.data-plot .axis.x,.training-plot .axis.x{bottom:5px}@media(max-width:1200px){.analyzer-layout{grid-template-columns:260px minmax(350px,1fr)}.frame-detail{grid-column:1/-1}.plot-bottom{grid-template-columns:1fr}}@media(max-width:700px){.analyzer-layout{grid-template-columns:1fr}.frame-detail{grid-column:auto}.data-plot canvas{min-height:260px}.device-strip{position:static}}
+
+.plot-empty{position:absolute;top:52%;left:10%;right:10%;margin:0;text-align:center;color:#a5bbc5;font:11px var(--mono);pointer-events:none}.plot-empty[hidden]{display:none}.training-plot .plot-empty{top:45%}#return-live{padding:4px 8px}
+
+/* 802.11 workspace: the table uses the remaining viewport height. */
+body:has(#view-constellation.active){height:100dvh;overflow:hidden}
+#view-constellation.active{height:calc(100dvh - 68px);display:flex;flex-direction:column;padding:12px 18px;overflow:hidden}
+#view-constellation .section-heading{flex:none;margin:0 0 8px}
+#view-constellation .section-heading h1{font-size:20px}
+.analyzer-layout{flex:1;min-height:0;display:grid;grid-template-columns:minmax(235px,300px) minmax(0,1fr);grid-template-rows:minmax(0, 3fr) minmax(130px, 1fr);gap:10px;align-items:stretch}
+.capture-column{min-height:0;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+.device-strip{flex:none;padding:9px;gap:5px}.device-strip h2{margin:0;font-size:12px}.device-strip input,.device-strip select{height:25px}.device-strip .primary{padding:5px}
+.frame-detail{flex:1;min-height:0;padding:10px;overflow:hidden}.frame-detail h3{font-size:13px;margin:4px 0 8px}.frame-detail h4{margin:8px 0 3px}.detail-grid{gap:4px}.frame-detail pre{max-height:55px;min-height:0;padding:5px;overflow:hidden}.frame-detail .note{margin:5px 0;line-height:1.25}
+.plots-column{min-height:0;display:grid;grid-template-rows:minmax(0, 2fr) minmax(0, 1fr);gap:10px}.data-plot{min-height:0;display:flex;flex-direction:column}.data-plot .panel-title{flex:none;height:36px}.data-plot canvas{flex:1;min-height:0;height:0}.plot-bottom{min-height:0;margin:0;grid-template-columns:minmax(150px,1fr) minmax(240px,2fr);gap:10px}.training-panel,.channel-panel{min-height:0}.training-panel{display:flex;flex-direction:column}.training-panel .panel-title{height:36px;flex:none}.training-plot{flex:1;min-height:0}.training-plot canvas{height:100%}.channel-panel{display:flex;flex-direction:column;padding:5px}.channel-panel canvas{flex:1;min-height:0;height:0}.channel-panel #channel-meta{padding:3px}.channel-note{padding:0 6px 3px}.spectrum-scale{padding-bottom:3px}
+.frames-panel{grid-column:1/-1;min-height:0;margin:0;display:flex;flex-direction:column}.frames-heading{flex:none;display:flex;padding:5px 10px}.frames-heading h2{font-size:13px}.frames-heading p{margin:0}.frame-filters{flex:none;display:flex;align-items:end;padding:4px 10px;gap:8px}.frame-filters label{gap:2px}.frame-filters input{width:150px;height:25px}.frame-filters input[type=checkbox]{width:auto}.frame-filters .secondary{padding:5px}.frames-panel .table-scroll{flex:1;min-height:0;max-height:none;overflow:auto}.frames-panel thead{position:sticky;top:0;background:#111c25}.frames-panel th,.frames-panel td{padding:6px 10px}
+@media(max-width:700px){#view-constellation.active{padding:8px}.analyzer-layout{grid-template-columns:minmax(150px,38%) minmax(0,1fr)}.plot-bottom{grid-template-columns:1fr 1fr}.device-strip{grid-template-columns:1fr 1fr}.frame-filters input{width:100px}.frame-detail{font-size:10px}.channel-note{display:none}}
+
+.secondary[hidden]{display:none}
+
+/* On phones, stack the workspace so plots and frame fields remain readable. */
+@media (max-width: 700px) {
+ body:has(#view-constellation.active){height:auto;overflow:auto}
+ .topbar{height:56px;padding:0 12px}.brand strong{font-size:12px}.status{font-size:10px;max-width:52%;text-align:right}
+ .rail{position:sticky;top:0;bottom:auto;width:100%;height:48px;padding:3px 10px;display:flex;gap:8px;border-right:0;border-bottom:1px solid var(--line);z-index:3}
+ .nav{width:auto;min-width:100px;height:40px;margin:0;padding:0 12px;font-size:11px;display:flex;align-items:center;justify-content:center;gap:8px}
+ .nav span{display:inline;font-size:19px;margin:0} .nav.active{box-shadow:inset 0 -2px var(--cyan)}
+ main,.topbar+aside+main{margin:0;padding:0}
+ #view-constellation.active{height:auto;display:block;overflow:visible;padding:12px}
+ .analyzer-layout{display:flex;flex-direction:column;gap:12px}
+ .capture-column{display:contents;overflow:visible}
+ .device-strip{order:0;position:static;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:12px}
+ .device-strip label{min-width:0}.device-strip input,.device-strip select{height:36px}.device-strip .primary{min-height:36px}
+ .plots-column{order:1;display:flex;flex-direction:column;gap:12px}
+ .data-plot{height:320px;min-height:0}.data-plot canvas{height:0;min-height:0}
+ .plot-bottom{display:flex;flex-direction:column;gap:12px;margin:0}
+ .training-panel{height:235px}.training-plot{min-height:0}.training-plot canvas{height:100%}
+ .channel-panel{height:250px}.plot-tabs{width:100%}.plot-tabs button{flex:1;padding:9px 4px}
+ .frame-detail{order:2;overflow:visible;padding:14px}.frame-detail pre{max-height:180px;overflow:auto;min-height:36px}.frame-detail h3{margin:8px 0 12px}.detail-grid{gap:8px}
+ .frames-panel{order:3;min-height:320px;height:420px}.frames-heading{align-items:flex-start;gap:8px}.frames-heading p{line-height:1.4}.frame-count{white-space:normal;text-align:right}
+ .frame-filters{display:flex;flex-wrap:wrap;align-items:end;gap:8px}.frame-filters label:not(.check){flex:1 1 120px}.frame-filters label.check{flex:1 1 100%}.frame-filters input:not([type=checkbox]){width:100%;height:36px}.frame-filters .secondary{min-height:36px}.frames-panel .table-scroll{overflow:auto;overscroll-behavior:contain}
+ .frames-panel th,.frames-panel td{padding:9px 10px}.view{padding:12px}.spectrum-panel canvas{height:300px}
+}
+
+.data-plot .axis.x,.training-plot .axis.x{left:50%;transform:translateX(-50%)}
+.data-plot .axis.y,.training-plot .axis.y{left:3px;top:50%;transform:translate(-30%,-50%) rotate(-90deg)}
+
+#spectrum-settings .device-strip{display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin-bottom:16px}#spectrum-settings .device-strip h2{width:100%}#spectrum-settings .device-strip label{display:grid}#spectrum-settings .device-strip input,#spectrum-settings .device-strip select{height:31px}@media(max-width:700px){#spectrum-settings .device-strip{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}#spectrum-settings .device-strip h2{grid-column:1/-1}#spectrum-settings .device-strip input,#spectrum-settings .device-strip select{height:36px}}
+
+/* Keep setting names together and align each control with its unit. */
+#capture-settings label, #spectrum-settings #capture-settings label {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 5px; align-content: start; min-width: 0;
+}
+#capture-settings label .setting-name {
+  grid-column: 1 / -1; grid-row: 1; white-space: nowrap;
+  font: inherit;
+}
+#capture-settings label input, #capture-settings label select {
+  grid-column: 1; width: 100%; min-width: 0; max-width: 100%;
+}
+#capture-settings label .setting-unit {
+  grid-column: 2; grid-row: 2; align-self: center; white-space: nowrap;
+}
+#capture-settings #gain-index { grid-row: 3; }
+#capture-settings .metric small { white-space: nowrap; }
+
+/* Spectrum controls need enough room for the gain selector and index. */
+#spectrum-settings #capture-settings label, #calibration-settings #capture-settings label { width: 120px; }
+#spectrum-settings #capture-settings label:has(#gain), #calibration-settings #capture-settings label:has(#gain) { width: 165px; grid-template-columns: minmax(0, 1fr) 60px; }
+#spectrum-settings #gain-index, #calibration-settings #gain-index { grid-column: 2; grid-row: 2; }
+#calibration-settings .device-strip { display:flex; flex-wrap:wrap; align-items:end; gap:12px; margin-bottom:16px; }
+#calibration-settings .device-strip h2 { width:100%; }
+.calibration-layout { display:grid; grid-template-columns:minmax(260px,340px) minmax(0,1fr); gap:16px; }
+.calibration-table { padding:16px; } .calibration-table h2 { margin:0; font-size:14px; }
+.calibration-table th,.calibration-table td { padding:7px 5px; }
+.calibration-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+#calibration-spectrum { cursor:crosshair; }
+@media(max-width:700px) { .calibration-layout { grid-template-columns:1fr; } #spectrum-settings #capture-settings label, #calibration-settings #capture-settings label { width:auto; } #spectrum-settings #capture-settings label:has(#gain), #calibration-settings #capture-settings label:has(#gain) { width:auto; } #calibration-settings .device-strip { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); } #calibration-settings .device-strip h2 { grid-column:1/-1; } }
+
+.calibration-entry{display:grid;gap:8px;padding:10px;margin:10px 0;border:1px solid #31515c;border-radius:6px}.calibration-entry[hidden]{display:none}.calibration-entry strong{font:11px var(--mono)}.calibration-entry label{display:grid;gap:4px;color:var(--muted);font-size:11px}.calibration-entry input{width:100%}
