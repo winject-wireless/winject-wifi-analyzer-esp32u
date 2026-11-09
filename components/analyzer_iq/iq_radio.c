@@ -32,6 +32,8 @@ SOC_RESERVE_MEMORY_REGION(0x3ffe8000, 0x3fff8000, esp32_rf_dump);
 #define DUMP_STATUS 0x60033d94u
 #define DUMP_BYTES  0x60033dc4u
 #define RX_GAIN     0x3ff5c02cu
+#define ADC_CTRL    0x3ff460a0u
+#define ADC_ON_FORCE (BIT(9) | BIT(8))
 #define CAPACITY    16384u
 #define SENTINEL    0xa55aa55au
 
@@ -297,6 +299,11 @@ bool iq_radio_capture(unsigned n, unsigned rate_code, const uint32_t** words,
         samples[j] = SENTINEL;
     }
     filter_apply();
+    /* Force the ADC on during the dump to avoid fixed I/Q runs from PHY
+     * gating (ESPARGOS/esp-sdr#22). */
+    uint32_t adc_ctrl = DPORT_REG_READ(ADC_CTRL);
+    DPORT_REG_WRITE(ADC_CTRL, adc_ctrl | ADC_ON_FORCE);
+    esp_rom_delay_us(2);
     uint32_t owner = DPORT_REG_READ(DPORT_IRAM_DRAM_AHB_SEL_REG);
     uint32_t byte_select = REG_READ(DUMP_BYTES);
     DPORT_REG_WRITE(DPORT_IRAM_DRAM_AHB_SEL_REG,
@@ -318,6 +325,8 @@ bool iq_radio_capture(unsigned n, unsigned rate_code, const uint32_t** words,
     esp_rom_delay_us(10);
     DPORT_REG_WRITE(DPORT_IRAM_DRAM_AHB_SEL_REG, owner);
     REG_WRITE(DUMP_BYTES, byte_select);
+    DPORT_REG_WRITE(ADC_CTRL, (DPORT_REG_READ(ADC_CTRL) & ~ADC_ON_FORCE) |
+                                 (adc_ctrl & ADC_ON_FORCE));
     filter_restore();
     if (!(result & BIT(18)) || (status & 0x7fff) != n)
     {
