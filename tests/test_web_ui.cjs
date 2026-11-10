@@ -197,7 +197,7 @@ assert(!elem('#sweep-tooltip').textContent.includes('dBm'));
 handlers['#sweep-canvas:mousemove']({clientX:400,clientY:100});assert.equal(elem('#sweep-tooltip').hidden,true);
 handlers['#sweep-canvas:mouseleave']();assert.equal(elem('#sweep-tooltip').hidden,true);
 
-// A partial next pass cannot replace the previously displayed spectrum.
+// A partial pass updates covered bins while retaining the last completed sweep.
 go(`state.sweep = {pending: [], range: [0, 1], stepHz: 1};
 const sweepTestPeek = {total: 2, bin_hz: 1, start_hz: 0};
 collectSweepPeek({...sweepTestPeek, index: 0, bins: [-40, -40]});
@@ -205,6 +205,7 @@ collectSweepPeek({...sweepTestPeek, index: 1, bins: [-40, -40]});`);
 assert.ok(Math.abs(go('state.sweep.power[0]') - 1e-4) < 1e-12);
 go('collectSweepPeek({...sweepTestPeek, index: 0, bins: [-30, -30]})');
 assert.ok(Math.abs(go('state.sweep.power[0]') - 1e-4) < 1e-12);
+assert.ok(Math.abs(go('state.sweep.displayPower[0]') - 8.2e-4) < 1e-12);
 go('collectSweepPeek({...sweepTestPeek, index: 1, bins: [-30, -30]})');
 assert.ok(Math.abs(go('state.sweep.power[0]') - 8.2e-4) < 1e-12);
 assert.equal(elem('#sweep-progress-bar').value, 100);
@@ -264,7 +265,7 @@ assert.equal(go('decodeWinject({fcs_ok:false,mpdu_hex:testPacket})'), null);
 assert.equal(go("decodeWinject({fcs_ok:true,mpdu_hex:testPacket.slice(0,32)+'00000000'+testPacket.slice(40)})"), null);
 console.log('mocked UI: winject domain, slot sizes, buses and malformed frames');
 
-// Waterfall follows at the top, anchors older history, and resets on retune.
+// Waterfall follows at the top, anchors older history, and preserves it on retune.
 const waterfallScroll = elem('#waterfall-scroll');
 waterfallScroll.clientWidth=4; waterfallScroll.clientHeight=6; waterfallScroll.scrollTop=0;
 context2d.createImageData=(w,h)=>({data:new Uint8ClampedArray(w*h*4)});
@@ -275,6 +276,14 @@ assert.deepEqual([...waterfallImage.data.slice(12,16)],[235,30,20,255]);
 waterfallScroll.scrollTop=5;
 go("addWaterfallCapture({spectrum:{start_hz:100,bin_hz:1,db:[-50,-50]}})");
 assert.equal(waterfallScroll.scrollTop,8); assert.equal(go('waterfall.rows.length'),2);
-go("addWaterfallCapture({spectrum:{start_hz:200,bin_hz:1,db:[-50,-50]}})");
-assert.equal(waterfallScroll.scrollTop,0); assert.equal(go('waterfall.rows.length'),1);
-console.log('mocked UI: waterfall colors, scroll anchoring and retune reset');
+waterfallScroll.scrollTop=0;
+go("addWaterfallCapture({spectrum:{start_hz:101,bin_hz:1,db:[-50,-50]}})");
+assert.equal(waterfallScroll.scrollTop,0); assert.equal(go('waterfall.rows.length'),3);
+// On the oldest row, the old high bin moves left and uncovered frequencies are blank.
+waterfallScroll.scrollTop=6; go('renderWaterfall()');
+assert.deepEqual([...waterfallImage.data.slice(0,4)],[235,30,20,255]);
+assert.deepEqual([...waterfallImage.data.slice(12,16)],[0,8,40,255]);
+go("addWaterfallCapture({spectrum:{start_hz:100,bin_hz:1,db:[-50,-50]}})");
+assert.equal(go('waterfall.rows.length'),4);
+assert.equal(go('waterfall.rows[3].values[0]'),-100, 'history survives tuning back');
+console.log('mocked UI: waterfall colors, scroll anchoring and frequency-aligned retuning');

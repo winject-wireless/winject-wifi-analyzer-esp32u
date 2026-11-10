@@ -190,7 +190,7 @@ body:has(#view-live.active){height:100dvh;overflow:hidden}
 #view-live #capture-settings{margin:0;padding:8px;gap:6px 10px}
 #view-live #capture-settings h2{flex:0 0 100%;width:100%;margin:0}
 #view-live #capture-settings input,#view-live #capture-settings select{height:25px}
-#view-live .section-heading{flex:none;margin:0;align-items:center}
+#view-live .section-heading{flex:none;margin:0;padding-left:10px;align-items:center}
 #view-live .section-heading h1{font-size:20px}
 #view-live .segmented button{padding:4px 10px}
 #view-live .spectrum-panel,#view-live .waterfall-panel{min-height:0;display:flex;flex-direction:column;padding:0}
@@ -216,7 +216,7 @@ body:has(#view-live.active){height:100dvh;overflow:hidden}
 /* Sweep shares the compact viewport and independently scrollable history. */
 body:has(#view-sweep.active){height:100dvh;overflow:hidden}
 #view-sweep.active{height:calc(100dvh - 68px);display:flex;flex-direction:column;gap:4px;padding:0;overflow:hidden}
-#view-sweep .section-heading{flex:none;margin:0;align-items:center}
+#view-sweep .section-heading{flex:none;margin:0;padding-left:10px;align-items:center}
 #view-sweep .section-heading h1{font-size:20px}
 #view-sweep .sweep-controls{flex:none;margin:0;padding:8px;gap:6px 10px}
 #view-sweep .sweep-controls h2{flex:0 0 100%;font-size:12px}

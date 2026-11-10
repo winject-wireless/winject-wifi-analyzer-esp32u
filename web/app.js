@@ -233,8 +233,8 @@ function renderLive() {
 
 }
 
-// A fixed dBFS scale keeps colors comparable across captures. History is reset
-// when frequency geometry changes, so each column always represents one frequency.
+// A fixed dBFS scale keeps colors comparable across captures. Each row retains
+// its frequency geometry so history can be viewed after retuning.
 const waterfall = {rows: [], key: null, rowHeight: 3, limit: 600, scroll: '#waterfall-scroll', space: '#waterfall-space', canvas: '#live-waterfall'};
 const sweepWaterfall = {rows: [], key: null, rowHeight: 3, limit: 600, scroll: '#sweep-waterfall-scroll', space: '#sweep-waterfall-space', canvas: '#sweep-waterfall'};
 function waterfallColor(value) {
@@ -247,14 +247,12 @@ const waterfallPalette = Array.from({length: 101}, (_, i) => waterfallColor(i - 
 function addWaterfallCapture(d, target = waterfall) {
   const s = d.spectrum;
   if (!s?.db?.length) return;
-  const key = `${s.start_hz}:${s.bin_hz}:${s.db.length}`;
   const scroll = $(target.scroll), following = scroll.scrollTop <= 1;
-  const reset = target.key !== key;
-  if (reset) { target.rows = []; target.key = key; scroll.scrollTop = 0; }
-  target.rows.unshift(s.db.slice());
+  target.geometry = {start: s.start_hz, bin: s.bin_hz, length: s.db.length};
+  target.rows.unshift({values: s.db.slice(), start: s.start_hz, bin: s.bin_hz});
   if (target.rows.length > target.limit) target.rows.pop();
   $(target.space).style.height = `${target.rows.length * target.rowHeight}px`;
-  if (!reset && !following && target.rows.length > 1) scroll.scrollTop += target.rowHeight;
+  if (!following && target.rows.length > 1) scroll.scrollTop += target.rowHeight;
   renderWaterfall(target);
 }
 function renderWaterfall(target = waterfall) {
@@ -269,7 +267,10 @@ function renderWaterfall(target = waterfall) {
     const row = target.rows[Math.floor((scroll.scrollTop + y) / target.rowHeight)];
     if (!row) continue;
     for (let px = 0; px < width; px++) {
-      const value = row[Math.min(row.length - 1, Math.floor(px * row.length / width))];
+      const geometry = target.geometry;
+      const frequency = geometry.start + (width > 1 ? px / (width - 1) : 0) * (geometry.length - 1) * geometry.bin;
+      const source = Math.round((frequency - row.start) / row.bin);
+      const value = source >= 0 && source < row.values.length ? row.values[source] : NaN;
       const color = waterfallPalette[Math.max(0, Math.min(100, Math.round(Number.isFinite(value) ? value + 100 : 0)))];
       const i = (y * width + px) * 4;
       img.data[i] = color[0]; img.data[i + 1] = color[1]; img.data[i + 2] = color[2]; img.data[i + 3] = 255;
@@ -745,10 +746,20 @@ function collectSweepPeek(tile) {
   $('#sweep-progress').textContent = `${tile.index + 1} / ${tile.total} · gain ${tile.gain_index}`;
   $('#sweep-progress-bar').value = (tile.index + 1) / tile.total * 100;
   sweep.pending.push(tile);
-  if (sweep.pending.length !== tile.total) return;
-
   const peeks = sweep.pending;
   const {power, binHz} = combineSweepPeeks(peeks, ...sweep.range, sweep.stepHz);
+  if (peeks.length !== tile.total) {
+    const previous = sweep.power;
+    sweep.displayPower = power.map((value, i) => value > 0
+      ? (previous?.length === power.length && previous[i] > 0 ? 0.2 * previous[i] + 0.8 * value : value)
+      : (previous?.length === power.length ? previous[i] : 0));
+    sweep.binHz = binHz;
+    const settings = peeks[0].calibration_settings;
+    sweep.settings = settings && peeks.every(t => sameCalibrationSettings(settings, t.calibration_settings)) ? settings : null;
+    renderSweep();
+    return;
+  }
+  delete sweep.displayPower;
   sweep.power = averageSweepPower(sweep.power, power);
   addWaterfallCapture({spectrum: {start_hz: sweep.range[0], bin_hz: binHz, db: Array.from(sweep.power, v => v > 0 ? 10 * Math.log10(v) : NaN)}}, sweepWaterfall);
   sweep.binHz = binHz;
@@ -800,7 +811,8 @@ function combineSweepPeeks(tiles, lo, hi, stepHz) {
 
 let sweepCursor = null;
 function updateSweepTooltip() {
-  const tooltip = $('#sweep-tooltip'), {power, binHz, range, settings} = state.sweep;
+  const tooltip = $('#sweep-tooltip'), {binHz, range, settings} = state.sweep;
+  const power = state.sweep.displayPower || state.sweep.power;
   if (!sweepCursor || !power || !range || !(binHz > 0)) { tooltip.hidden = true; return; }
   const rect = $('#sweep-canvas').getBoundingClientRect();
   const fraction = (sweepCursor.x - rect.left) / rect.width;
@@ -822,7 +834,8 @@ function renderSweep() {
   updateSweepTooltip();
   const {x, w, h} = canvas('#sweep-canvas'); if (!w || !h) return;
   x.clearRect(0, 0, w, h); grid(x, w, h, 10, 4);
-  const {power, binHz, range, settings} = state.sweep;
+  const {binHz, range, settings} = state.sweep;
+  const power = state.sweep.displayPower || state.sweep.power;
   if (!power) return;
   const [lo, hi] = range;
   const db = power.map(value => 10 * Math.log10(value));
