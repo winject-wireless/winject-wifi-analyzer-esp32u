@@ -99,8 +99,8 @@ def merge_bins(freqs: np.ndarray, spec_db: np.ndarray, max_bins: int, peak: bool
 
 
 def sweep_tile(captures: list[np.ndarray], fs: float, center_hz: float, step_hz: float,
-               nfft: int, peak: bool, max_bins: int = 256) -> dict:
-    """Spectrum of one sweep step: the central step_hz of the averaged PSD."""
+               nfft: int, peak: bool, max_bins: int = 256, *, crop_offset_hz: float = 0) -> dict:
+    """Select one sweep tile from the averaged PSD around the crop offset."""
     acc = None
     for x in captures:
         _, s = psd(x, fs, nfft, peak)
@@ -108,7 +108,7 @@ def sweep_tile(captures: list[np.ndarray], fs: float, center_hz: float, step_hz:
         acc = lin if acc is None else (np.maximum(acc, lin) if peak else acc + lin)
     lin = acc if peak else acc / len(captures)
     freqs = (np.arange(nfft) - nfft // 2) * (fs / nfft)
-    keep = np.abs(freqs) <= step_hz / 2
+    keep = np.abs(freqs - crop_offset_hz) <= step_hz / 2
     f, s = merge_bins(freqs[keep] + center_hz, db(lin[keep]).astype(np.float32),
                       max_bins, peak)
     return {

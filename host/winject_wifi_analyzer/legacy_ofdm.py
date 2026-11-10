@@ -127,14 +127,15 @@ def decode_legacy_ofdm(samples: np.ndarray, short_start: int, long_start: int,
         h[_ACTIVE%64]*=_REF
         active_h=h[_ACTIVE%64]
         if np.min(abs(active_h))<1e-12:continue
-        def symbol(start, pol):
+        def symbol(start, pol, include_raw=False):
             if start+80>len(z):return None
             y=np.fft.fft(z[start+16:start+80]);eq=y/np.where(abs(h)>1e-12,h,1)
             pilot_ref=_POLARITY[pol%127]*np.array([1,1,1,-1])
             pilot=eq[_PILOTS%64]*pilot_ref
             if abs(sum(pilot))<1e-12:return None
+            before_pilot=eq[_DATA%64].copy()
             eq*=np.exp(-1j*np.angle(sum(pilot)))
-            return eq[_DATA%64]
+            return (eq[_DATA%64], before_pilot) if include_raw else eq[_DATA%64]
         sig=symbol(first+128,0)
         if sig is None:continue
         # This convention follows the usual BPSK 0->-1 mapping.
@@ -146,10 +147,12 @@ def decode_legacy_ofdm(samples: np.ndarray, short_start: int, long_start: int,
         if length<14 or length>4095:continue
         symbols=(16+length*8+6+n_dbps-1)//n_dbps
         if first+128+80*(symbols+1)>len(z):continue
-        raw=[];constellation=[]; ideals=[];perm=_deinterleave_map(n_bpsc)
+        raw=[];constellation=[]; pre_pilot=[]; ideals=[];perm=_deinterleave_map(n_bpsc)
         for n in range(symbols):
-            q=symbol(first+208+n*80,n+1)
-            if q is None:break
+            pair=symbol(first+208+n*80,n+1,True)
+            if pair is None:break
+            q, uncorrected = pair
+            pre_pilot.extend(uncorrected.tolist())
             demapped,ideal=_hard_demap(q,n_bpsc)
             constellation.extend(q.tolist());ideals.extend(ideal.tolist());raw.extend(demapped[perm].tolist())
         else:
@@ -172,7 +175,10 @@ def decode_legacy_ofdm(samples: np.ndarray, short_start: int, long_start: int,
                      else 'Decision-directed data-field EVM estimate, including SERVICE and padding; not standards-calibrated')
             return {**mpdu,'modulation':_MODULATIONS[n_bpsc],'rate_mbps':rate,'evm_percent':evm_value,
                     'evm_scope':'data-field decisions including SERVICE and padding; not standards-calibrated','evm_warning':warning,
-                    'payload_clipped_fraction':round(clipped,4),'constellation':[[round(float(v.real),4),round(float(v.imag),4)] for v in q[:1024]],
+                    'payload_clipped_fraction':round(clipped,4),
+                    'raw_data_iq':[[round(float(v.real),4),round(float(v.imag),4)] for v in pre_pilot[:1024]],
+                    'raw_training_iq':[[round(float(v.real),4),round(float(v.imag),4)] for v in np.r_[y1[_ACTIVE%64]/h[_ACTIVE%64], y2[_ACTIVE%64]/h[_ACTIVE%64]]],
+                    'constellation':[[round(float(v.real),4),round(float(v.imag),4)] for v in q[:1024]],
                     'frame_start_sample':first*2+decimation_phase-384, 'end_sample':raw_end, 'ltf_start_sample':first*2+decimation_phase,'ltf_match':round(score,4),'phy':'802.11 legacy OFDM'}
     return None
 

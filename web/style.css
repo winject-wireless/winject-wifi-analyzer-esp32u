@@ -92,3 +92,151 @@ body:has(#view-constellation.active){height:100dvh;overflow:hidden}
 #live-axis-note { text-align: center; }
 
 #live-axis-note, #calibration-axis-note { flex: 1; min-width: 0; padding: 0 8px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sweep-controls{flex-wrap:wrap;align-items:end;gap:12px 16px}
+.sweep-controls h2{width:100%;margin:0}
+.sweep-controls label:not(.check){display:grid;grid-template-columns:minmax(0,90px) auto;gap:4px 6px;align-items:center;white-space:nowrap}
+.sweep-controls .sweep-setting-name{grid-column:1 / -1;grid-row:1;white-space:nowrap}
+.sweep-controls input:not([type=checkbox]),.sweep-controls select{grid-column:1;grid-row:2;width:100%;min-width:0;height:31px}
+.sweep-controls label:not(.check)>span:not(.sweep-setting-name){grid-column:2;grid-row:2}
+.sweep-controls .check{align-self:end;min-height:31px}
+.sweep-controls .range-note{width:100%;margin:0}
+
+.sweep-actions{margin-left:auto}
+.sweep-radio-settings{display:flex;flex-wrap:wrap;gap:8px 20px;width:100%;color:var(--muted);font:11px var(--mono)}
+.sweep-radio-settings output{margin-left:4px;color:var(--text)}
+.sweep-tooltip{position:fixed;z-index:10;pointer-events:none;padding:7px 10px;border:1px solid #31515c;border-radius:5px;background:#0b151e;color:var(--text);font:11px/1.5 var(--mono);white-space:pre;box-shadow:0 4px 14px #0008}
+.sweep-tooltip[hidden]{display:none}
+
+/* Frame details and captured frames each occupy a full-height column. */
+@media (min-width: 701px) {
+ .analyzer-layout{grid-template-columns:minmax(200px, 250px) minmax(230px, 300px) minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
+ .capture-column{grid-column:1;grid-row:1}
+ .frame-detail{overflow:auto}
+ .frame-detail pre{max-height:none;overflow:visible}
+ .frames-panel{grid-column:2;grid-row:1}
+ .frames-heading{display:block}
+ .frame-count{display:block;margin-top:4px}
+ .frame-filters{display:grid;grid-template-columns:1fr 1fr}
+ .frame-filters label.check,.frame-filters #filter-error{grid-column:1/-1}
+ .frame-filters input{width:100%}
+ .plots-column{grid-column:3;grid-row:1;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:minmax(0,2fr) minmax(0,1fr)}
+ .response-panel{grid-column:1}
+ .waveform-panel{grid-column:2/4}
+}
+.response-panel .panel-title{height:36px;flex:none;padding:0 8px}
+.response-panel #response-meta{display:block;color:var(--muted);font:10px var(--mono);padding:3px}
+@media (max-width:700px) {
+ .plots-column{order:2}
+ .frames-panel{order:1}
+ .frame-detail{order:0}
+ .data-plot{width:100%}
+ .response-panel,.waveform-panel{height:250px}
+}
+
+/* The frame list fills the last row to the right of the full-height sidebar. */
+@media (min-width: 701px) {
+ .analyzer-layout{grid-template-columns:minmax(200px, 300px) minmax(0,1fr);grid-template-rows:minmax(0,7fr) minmax(130px,3fr)}
+ .capture-column{grid-column:1;grid-row:1/3}
+ .plots-column{grid-column:2;grid-row:1}
+ .frames-panel{grid-column:2;grid-row:2}
+ .frames-heading{display:flex}
+ .frame-count{margin-top:0}
+ .frame-filters{display:flex}
+ .frame-filters input{width:150px}
+}
+
+/* Keep the capture controls and both counters together. */
+#capture-settings .capture-status{grid-column:1/-1;display:flex;align-items:center;gap:8px;min-width:0}
+#capture-settings .capture-status #run{flex:0 0 auto;min-width:56px;padding:5px 8px}
+#capture-settings .capture-status .metric{flex:0 1 auto;min-width:0;margin:0;padding-left:8px}
+@media(max-width:700px){#capture-settings .capture-status #run{min-height:36px}}
+
+/* Put address labels beside their fields to leave more room for frame rows. */
+@media (min-width:701px) {
+ .frame-filters{align-items:center;padding:3px 10px;gap:6px 10px}
+ .frame-filters label:not(.check){display:flex;align-items:center;gap:5px;white-space:nowrap}
+ .frame-filters input:not([type=checkbox]){width:140px;height:24px}
+ .frame-filters .secondary{padding:4px 7px}
+}
+
+/* Keep the frame details fixed and scroll only an overflowing MPDU. */
+.frame-detail{display:flex;flex-direction:column}
+.frame-detail > :not(#frame-mpdu){flex:none}
+.frame-detail #frame-decoded{max-height:none;overflow:visible}
+.frame-detail #frame-mpdu{min-height:0;overflow:auto;overscroll-behavior:contain}
+@media(min-width:701px){.frame-detail{overflow:hidden}.frame-detail #frame-mpdu{flex:1 1 auto;max-height:none}}
+@media(max-width:700px){.frame-detail #frame-mpdu{max-height:180px;min-height:36px}}
+
+/* Each slot has its own hue; the route byte is darker than its PDU. */
+.mpdu-header{background:#236f4f;color:#fff}
+.mpdu-bus,.mpdu-pdu{color:#fff}
+.slot-0.mpdu-bus{background:#73531b}.slot-0.mpdu-pdu{background:#ad7d29}
+.slot-1.mpdu-bus{background:#245b82}.slot-1.mpdu-pdu{background:#397fae}
+.slot-2.mpdu-bus{background:#713e7b}.slot-2.mpdu-pdu{background:#a35eaf}
+.slot-3.mpdu-bus{background:#873e3e}.slot-3.mpdu-pdu{background:#bd6262}
+.slot-4.mpdu-bus{background:#40635e}.slot-4.mpdu-pdu{background:#66958c}
+
+/* Allow all frame details to remain reachable on short screens. */
+@media(min-width:701px){.frame-detail{overflow:auto}.frame-detail #frame-mpdu{flex:1 0 100px}}
+
+.frame-protocols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.frame-protocols section{min-width:0}
+.frame-protocols pre{overflow-wrap:anywhere}
+
+/* Keep the live workspace inside the viewport; only waterfall history scrolls. */
+body:has(#view-live.active){height:100dvh;overflow:hidden}
+#view-live.active{height:calc(100dvh - 68px);display:flex;flex-direction:column;gap:4px;padding:0;overflow:hidden}
+#view-live #spectrum-settings{flex:none}
+#view-live #capture-settings{margin:0;padding:8px;gap:6px 10px}
+#view-live #capture-settings h2{flex:0 0 100%;width:100%;margin:0}
+#view-live #capture-settings input,#view-live #capture-settings select{height:25px}
+#view-live .section-heading{flex:none;margin:0;align-items:center}
+#view-live .section-heading h1{font-size:20px}
+#view-live .segmented button{padding:4px 10px}
+#view-live .spectrum-panel,#view-live .waterfall-panel{min-height:0;display:flex;flex-direction:column;padding:0}
+#view-live .spectrum-panel{flex:3}
+#view-live .waterfall-panel{flex:2}
+#view-live .panel-title{height:32px;flex:none;padding:0 10px;gap:10px}
+#view-live .panel-title span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#view-live .spectrum-panel canvas{flex:1;min-height:0;height:0}
+#view-live .spectrum-scale{flex:none;padding:2px 10px}
+.waterfall-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;background:#000828}
+.waterfall-space{position:relative;width:100%;min-height:100%}
+.waterfall-canvas{display:block;position:sticky;top:0;width:100%;max-width:100%;image-rendering:pixelated}
+@media(max-width:700px){
+ body:has(#view-live.active) .topbar{position:relative}
+ #view-live.active{height:calc(100dvh - 104px);padding:0;gap:4px}
+ #view-live #capture-settings{display:flex;flex-wrap:wrap;max-height:30dvh;overflow:auto}
+ #view-live #capture-settings h2{width:100%}
+ #view-live #capture-settings label,#view-live #capture-settings label:has(#gain){width:105px}
+ #view-live #capture-settings label:has(#gain){width:155px}
+ #view-live #capture-settings input,#view-live #capture-settings select{height:28px}
+}
+
+/* Sweep shares the compact viewport and independently scrollable history. */
+body:has(#view-sweep.active){height:100dvh;overflow:hidden}
+#view-sweep.active{height:calc(100dvh - 68px);display:flex;flex-direction:column;gap:4px;padding:0;overflow:hidden}
+#view-sweep .section-heading{flex:none;margin:0;align-items:center}
+#view-sweep .section-heading h1{font-size:20px}
+#view-sweep .sweep-controls{flex:none;margin:0;padding:8px;gap:6px 10px}
+#view-sweep .sweep-controls h2{flex:0 0 100%;font-size:12px}
+#view-sweep .sweep-controls input:not([type=checkbox]),#view-sweep .sweep-controls select{height:25px}
+#view-sweep .sweep-controls .check{min-height:25px}
+#view-sweep .range-note{font-size:10px}
+#view-sweep .spectrum-panel,#view-sweep .waterfall-panel{min-height:0;display:flex;flex-direction:column;padding:0}
+#view-sweep .spectrum-panel{flex:3}
+#view-sweep .waterfall-panel{flex:2}
+#view-sweep .panel-title{height:32px;flex:none;padding:0 10px;gap:10px}
+#view-sweep .panel-title span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#view-sweep .spectrum-panel canvas{flex:1;min-height:0;height:0}
+#view-sweep .spectrum-scale{flex:none;padding:2px 10px}
+@media(max-width:700px){
+ body:has(#view-sweep.active) .topbar{position:relative}
+ #view-sweep.active{height:calc(100dvh - 104px)}
+ #view-sweep .sweep-controls{max-height:35dvh;overflow:auto}
+}
+
+#sweep-progress-bar{display:block;flex:none;width:100%;height:2px;border:0;appearance:none;background:#20303d}
+#sweep-progress-bar::-webkit-progress-bar{background:#20303d}
+#sweep-progress-bar::-webkit-progress-value{background:var(--cyan)}
+#sweep-progress-bar::-moz-progress-bar{background:var(--cyan)}

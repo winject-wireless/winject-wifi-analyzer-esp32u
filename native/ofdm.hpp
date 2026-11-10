@@ -29,7 +29,7 @@ struct Decoded
     std::vector<uint8_t> mpdu;
     int rate_mbps = 0;
     std::string modulation;
-    std::vector<std::complex<float>> constellation;
+    std::vector<std::complex<float>> constellation, raw_data_iq, raw_training_iq;
     int ltf_start_sample = 0, frame_end_sample = 0;
     float evm_percent = 0, clipped_fraction = 0, ltf_match = 0;
     bool evm_valid = false;

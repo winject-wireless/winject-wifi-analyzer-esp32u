@@ -71,6 +71,27 @@ def make_frame(payload, corrupt_fcs=False, rate=6):
     return iq40, (60+80)*2, (60+160+32)*2
 
 class LegacyOFDMTest(unittest.TestCase):
+    def test_pre_pilot_data_preserves_payload_phase(self):
+        from winject_wifi_analyzer import legacy_ofdm
+        mpdu=bytes.fromhex('08000000 ffffffffffff 102030405060 aabbccddeeff 3012')+b'phase test'
+        original = symbol
+        calls = 0
+        def rotated(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            out = original(*args, **kwargs)
+            return out if calls == 1 else out * np.exp(0.4j)
+        with patch(__name__ + '.symbol', side_effect=rotated):
+            samples, short, long = make_frame(mpdu, rate=24)
+        result=legacy_ofdm.decode_legacy_ofdm(samples,short,long)
+        self.assertIsNotNone(result)
+        raw=np.array([complex(*p) for p in result['raw_data_iq']])
+        corrected=np.array([complex(*p) for p in result['constellation']])
+        phase=np.angle(np.vdot(corrected, raw))
+        self.assertAlmostEqual(phase, 0.4, delta=0.03)
+        self.assertEqual(len(result['raw_training_iq']), 104)
+        self.assertLess(np.mean(np.abs(np.abs(np.array([complex(*p) for p in result['raw_training_iq']]))-1)), 0.1)
+
     def test_independent_openofdm_vector(self):
         for rate in (6, 54):
             with self.subTest(rate=rate):

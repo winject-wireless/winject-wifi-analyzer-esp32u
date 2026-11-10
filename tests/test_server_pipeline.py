@@ -157,3 +157,7 @@ class FrameWaveformTest(unittest.TestCase):
         measured = frame_waveform(x, 0, len(x), 1_000_000)
         self.assertAlmostEqual(measured['frame_rssi_dbfs'], 20*np.log10(.2), places=1)
         self.assertFalse(measured['frame_clipped'])
+        # A bin-centered tone has the same dBFS reference as calibration.
+        tone = (0.2*np.exp(2j*np.pi*30*np.arange(2048)/512)).astype(np.complex64)
+        spectrum = frame_waveform(tone, 0, len(tone), 1_000_000)['frame_spectrum_db']
+        self.assertAlmostEqual(max(spectrum), 20*np.log10(.2), places=1)

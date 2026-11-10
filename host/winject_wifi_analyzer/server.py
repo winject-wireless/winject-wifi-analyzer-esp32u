@@ -46,17 +46,14 @@ def frame_waveform(samples, start, end, sample_rate_hz):
         return {}
     power = np.abs(x) ** 2
     db = lambda value: round(float(10 * np.log10(max(float(value), 1e-12))), 2)
-    # Average spectral power over the entire interval, rather than an FFT of
-    # just its first window. Keep the wire representation bounded.
-    nfft = min(512, len(x))
-    windows = [x[i:i+nfft] for i in range(0, len(x), nfft)]
-    spectra = [np.abs(np.fft.fftshift(np.fft.fft(w * np.hanning(len(w)), n=nfft))) ** 2 / max(np.sum(np.hanning(len(w)) ** 2), 1e-12) for w in windows if len(w) > 1]
-    spectrum = np.mean(spectra, axis=0)
+    # Use the same coherent-gain normalization as the tone calibration and
+    # the native frame FFT, so calibrated per-bin power has the same reference.
+    _, spectrum_db = dsp.psd(x, sample_rate_hz, nfft=512)
     buckets = np.array_split(power, min(256, len(power)))
     return {"frame_peak_dbfs": db(np.max(power)), "frame_mean_dbfs": db(np.mean(power)),
             "frame_rssi_dbfs": db(np.mean(np.abs(x - x.mean()) ** 2)),
             "frame_clipped": bool(np.any((np.abs(x.real) >= dsp.CLIP) | (np.abs(x.imag) >= dsp.CLIP))),
-            "frame_spectrum_db": [db(v) for v in spectrum],
+            "frame_spectrum_db": [round(float(v), 2) for v in spectrum_db],
             "frame_envelope_db": [db(np.max(b)) for b in buckets],
             "frame_duration_us": round(len(x) / sample_rate_hz * 1e6, 2)}
 
@@ -67,7 +64,7 @@ class Analyzer:
         self.clients: set[WebSocketServerProtocol] = set()
         self.config = {"freq_mhz": 2437, "gain": "agc", "bw_mhz": 0,
                        "rate_hz": 40_000_000, "n": 16380, "bits": 8,
-                       "nfft": 1024, "average": 0.6, "detector": "average"}
+                       "nfft": 1024, "average": 0.2, "detector": "average"}
         self.mode = "idle"  # idle | live | sweep
         self.want_live = True
         self.radio_info: dict[str, str] = {}
@@ -77,6 +74,7 @@ class Analyzer:
         self.avg_spec: np.ndarray | None = None
         self.rate_window: list[float] = []
         self.sweep: dict | None = None
+        self.sweep_lock = asyncio.Lock()
         self.resume_live = False
         self.calibration_task = None
         self.calibration_owner = None
@@ -129,51 +127,93 @@ class Analyzer:
         self.mode = "idle"
 
     async def start_sweep(self, req: dict) -> None:
-        self.frame_generation += 1
+        async with self.sweep_lock:
+            await self._start_sweep(req)
+
+    async def _start_sweep(self, req: dict) -> None:
         start, stop = int(req["start_mhz"]), int(req["stop_mhz"])
         step = int(req.get("step_mhz", 10))
         rate = int(req.get("rate_hz", 16_000_000))
         nfft = int(req.get("fft", 512))
         dwell = int(req.get("dwell", 4))
+        dwell_ms = int(req.get("dwell_ms", 0))
+        samples = int(req.get("samples", max(nfft, 1024)))
+        bits = int(req.get("bits", 8))
+        if nfft < 16 or nfft > 16384 or nfft & (nfft - 1) or not max(128, nfft) <= samples <= 16380 or bits not in (8, 10):
+            raise ValueError("invalid sweep sample configuration")
+        if not 0 <= dwell_ms <= 1000 or not 1 <= dwell <= 100:
+            raise ValueError("invalid sweep dwell")
         if rate not in RATES or not 100 <= start <= stop <= 6000 or step < 1:
             raise ValueError("start/stop 100..6000 MHz, rate 80/40/16 MS/s")
-        if step * 1e6 > 0.8 * rate:
-            raise ValueError("step must be <= 0.8 x sample rate")
-        self.resume_live = self.mode == "live"
-        await self.link.request("iq_stop")
-        # Fixed gain (per-step AGC would scale every tile differently) and an
-        # analog low-pass at ~0.8 x fs; both restored after the sweep.
-        gain = self.config["gain"]
-        bw = 0 if rate >= 80_000_000 else max(12, min(67, round(rate * 0.8 / 1e6)))
-        await self.link.request(f"iq_set gain={40 if gain == 'agc' else int(gain)} bw={bw}")
+        offset = int(req.get("crop_offset_mhz", 0))
+        width = int(req.get("peek_bw_mhz", step))
+        if width < step or (abs(offset) + width / 2) * 1e6 > 0.4 * rate or not 100 <= start - offset <= stop - offset <= 6000:
+            raise ValueError("invalid sweep crop offset")
+        default_lpf = 0 if rate >= 80_000_000 else max(12, min(67, round(rate * 0.8 / 1e6)))
+        bw = int(req.get("lpf_mhz", default_lpf))
+        if bw and (not 12 <= bw <= 67 or abs(offset) + width / 2 > bw / 2):
+            raise ValueError("invalid sweep LPF")
+        # Fixed gain keeps sweep tiles on the same power scale.
+        gain = int(req.get("gain", 40 if self.config["gain"] == "agc" else self.config["gain"]))
+        if not 0 <= gain <= 81:
+            raise ValueError("invalid sweep gain")
+        end = int(req.get("end_mhz", stop))
+        if not start <= end <= stop:
+            raise ValueError("invalid sweep display range")
+        if self.mode != "sweep":
+            self.resume_live = self.mode == "live"
+        self.frame_generation += 1
+        self.mode = "sweep"
         repeat = bool(req.get("repeat", False))
-        reply = await self.link.request(
-            f"iq_sweep start={start} stop={stop} step={step} n={max(nfft, 1024)} "
-            f"rate={rate} bits=8 dwell={dwell} passes={0 if repeat else 1} "
-            f"dst={self.link.dst}")
-        job = int(dict(p.split("=", 1) for p in reply[0].split()[1:] if "=" in p)["id"])
-        self.sweep = {"job": job, "step_hz": step * 1e6, "nfft": nfft,
+        try:
+            await self.link.request("iq_stop")
+            await self.link.request(f"iq_set gain={gain} bw={bw}")
+            reply = await self.link.request(
+                f"iq_sweep start={start - offset} stop={stop - offset} step={step} n={samples} "
+                f"rate={rate} bits={bits} {f'dwell_ms={dwell_ms}' if dwell_ms else f'dwell={dwell}'} "
+                f"passes={0 if repeat else 1} dst={self.link.dst}")
+            job = int(dict(p.split("=", 1) for p in reply[0].split()[1:] if "=" in p)["id"])
+        except Exception:
+            try:
+                await self._finish_sweep("failed")
+            except (MPlaneError, TimeoutError):
+                log.exception("could not restore radio after sweep failure")
+            if self.mode == "sweep":
+                self.mode = "idle"
+            raise
+        self.sweep = {"job": job, "width_hz": width * 1e6, "nfft": nfft,
+                      "crop_offset_hz": offset * 1e6, "mask_dc": "peek_bw_mhz" in req,
                       "peak": req.get("detector") == "peak", "pending": [],
                       "steps": (stop - start) // step + 1, "start_mhz": start,
-                      "stop_mhz": stop, "step_mhz": step, "t0": time.monotonic()}
-        self.mode = "sweep"
-        await self.broadcast({"event": "sweep.start", "data": {
-            k: self.sweep[k] for k in ("job", "steps", "start_mhz", "stop_mhz", "step_mhz")}})
+                      "end_mhz": end, "stop_mhz": stop, "step_mhz": step, "t0": time.monotonic()}
+        await self.broadcast({"event": "sweep.start", "data": self.sweep_info()})
 
-    async def end_sweep(self, state: str) -> None:
+    def sweep_info(self) -> dict | None:
         if self.sweep is None:
+            return None
+        return {key: self.sweep[key] for key in ("job", "steps", "start_mhz", "end_mhz", "stop_mhz", "step_mhz")}
+
+    async def end_sweep(self, state: str, job: int | None = None) -> None:
+        async with self.sweep_lock:
+            await self._finish_sweep(state, job)
+
+    async def _finish_sweep(self, state: str, job: int | None = None) -> None:
+        if self.sweep is None or (job is not None and self.sweep["job"] != job):
             return
         info = {"job": self.sweep["job"], "state": state,
                 "seconds": round(time.monotonic() - self.sweep["t0"], 2)}
         self.sweep = None
-        await self.link.request("iq_stop")
-        await self.apply_radio()
-        self.mode = "idle"
-        if self.resume_live:
-            await self.start_live()
+        try:
+            await self.link.request("iq_stop")
+            await self.apply_radio()
+            if self.resume_live:
+                await self.start_live()
+        finally:
+            if self.mode == "sweep":
+                self.mode = "idle"
         await self.broadcast({"event": "sweep.done", "data": info})
 
-    async def calibrate_gains(self, power_dbm: float, tone_hz: float) -> None:
+    async def calibrate_gains(self, power_dbm: float, tone_hz: float, start_gain: int = 0, end_gain: int | None = None) -> None:
         resume = self.mode == "live"
         c = self.config.copy()
         points = []
@@ -185,11 +225,15 @@ class Analyzer:
             gain_max = int(info["gain_max"])
             if not 0 <= gain_max <= 255:
                 raise ValueError("Invalid radio gain range")
+            if end_gain is None:
+                end_gain = gain_max
+            if not 0 <= start_gain <= end_gain <= gain_max:
+                raise ValueError("Invalid gain range")
             await self.link.request("iq_stop")
             self.mode = "calibration"
             self.frame_generation += 1
-            for gain in range(gain_max + 1):
-                await self.broadcast({"event": "calibration.progress", "data": {"gain": gain, "total": gain_max + 1, "accepted": len(points), "skipped": len(skipped)}})
+            for gain in range(start_gain, end_gain + 1):
+                await self.broadcast({"event": "calibration.progress", "data": {"gain": gain, "total": end_gain - start_gain + 1, "end_gain": end_gain, "accepted": len(points), "skipped": len(skipped)}})
                 await self.link.request(f"iq_set gain={gain}")
                 while not self.calibration_queue.empty():
                     self.calibration_queue.get_nowait()
@@ -376,16 +420,26 @@ class Analyzer:
 
     def _sweep_capture(self, cap: Capture) -> None:
         s = self.sweep
+        if s.get("pending_step") != cap.step:
+            s["pending"] = []
+            s["pending_step"] = cap.step
         s["pending"].append(cap.samples())
         if not cap.flags & FLAG_LAST_IN_STEP:
             return
         tile = dsp.sweep_tile(s["pending"], cap.sample_rate_hz, cap.frequency_hz,
-                              s["step_hz"], s["nfft"], s["peak"])
+                              s["width_hz"], s["nfft"], s["peak"],
+                              crop_offset_hz=s["crop_offset_hz"])
+        if s["mask_dc"]:
+            tile["dc_guard_hz"] = 250_000 + tile["bin_hz"] / 2
         s["pending"] = []
-        tile.update(index=cap.step, total=cap.steps, gain_index=cap.gain_index)
+        tile.update(job=cap.job_id, index=cap.step, total=cap.steps, gain_index=cap.gain_index,
+                    calibration_settings={"gain": cap.gain_index, "rate_hz": cap.sample_rate_hz,
+                                          "nfft": s["nfft"], "samples": cap.sample_count,
+                                          "detector": "peak" if s["peak"] else "average",
+                                          "bw_mhz": cap.bandwidth_mhz, "bits": cap.bits})
         asyncio.ensure_future(self.broadcast({"event": "sweep.tile", "data": tile}))
         if cap.flags & FLAG_LAST_CAPTURE:
-            asyncio.ensure_future(self.end_sweep("completed"))
+            asyncio.ensure_future(self.end_sweep("completed", cap.job_id))
 
     def live_frame(self, cap: Capture) -> dict:
         x = cap.samples()
@@ -426,7 +480,7 @@ class Analyzer:
         self.rate_window = [t for t in self.rate_window if now - t < 2.0]
         a = self.link.assembler
         return {"event": "status", "data": {
-            "mode": self.mode, "config": self.config, "radio": self.radio_info,
+            "mode": self.mode, "config": self.config, "radio": self.radio_info, "sweep": self.sweep_info(),
             "radio_ip": self.link.radio_ip, "captures_per_s": round(len(self.rate_window) / 2, 1),
             "datagrams": self.link.datagrams, "mbytes": round(self.link.bytes / 1e6, 1),
             "completed": a.completed, "lost": a.lost, "errors": a.errors,
@@ -489,7 +543,7 @@ class Analyzer:
             if abs(tone - self.latest.frequency_hz) >= self.latest.sample_rate_hz / 2:
                 raise ValueError("Tone is outside the capture bandwidth")
             self.calibration_owner = owner
-            self.calibration_task = asyncio.create_task(self.calibrate_gains(power, tone))
+            self.calibration_task = asyncio.create_task(self.calibrate_gains(power, tone, msg.get("start_gain", 0), msg.get("end_gain")))
             await asyncio.sleep(0)
         elif op == "config":
             for k in ("freq_mhz", "gain", "bw_mhz", "rate_hz", "n", "bits", "nfft",

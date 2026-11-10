@@ -25,6 +25,10 @@ int main(int argc, char** argv)
         auto d = decode(x, c, 40000000);
         if (d)
         {
+            if (!d->raw_data_iq.empty() && !d->constellation.empty())
+                std::cerr << "iq " << d->raw_data_iq[0].real() << " " << d->raw_data_iq[0].imag()
+                          << " " << d->constellation[0].real() << " " << d->constellation[0].imag()
+                          << " " << d->raw_training_iq.size() << "\n";
             std::cout << d->rate_mbps << " " << d->mpdu.size() << " "
                       << c.start_sample << " " << c.long_start_sample << "\n";
         }

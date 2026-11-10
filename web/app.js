@@ -3,17 +3,21 @@
 const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelectorAll(s)];
 const state = {
   status: null, live: null, liveAt: 0, snapshot: null, points: 'corrected',
-  history: [], sweep: {tiles: [], range: null}, peakHold: null,
-  frames: [], verifiedFrames: [], selectedFrame: null, liveCandidate: null, liveCandidateAt: 0, filters: {addr1: '', addr2: '', addr3: ''}, fcsOnly: false, framePlot: 'channel', calibration: null,
+  history: [], sweep: {}, peakHold: null,
+  frames: [], verifiedFrames: [], selectedFrame: null, liveCandidate: null, liveCandidateAt: 0, filters: {addr1: '', addr2: '', addr3: ''}, fcsOnly: false, framePlot: 'fft', calibration: null,
 };
 let ws = null;
 const preferencesKey = 'winject-analyzer-view-v1';
+const sweepNumberFields = ['start', 'stop', 'bw', 'overlap', 'time', 'gain'];
+const sweepValueFields = [...sweepNumberFields.map(name => `sweep-${name}`), 'sweep-bits', 'detector'];
 function savePreferences() {
   const activeView = $('.nav.active');
   const activeDetector = $('[data-detector].active');
   const preferences = {
     view: activeView?.dataset.view, detector: activeDetector?.dataset.detector,
     framePlot: state.framePlot, fcsOnly: state.fcsOnly, filters: state.filters,
+    sweepInputs: Object.fromEntries(sweepValueFields.map(id => [id, $(`#${id}`).value])),
+    sweepRepeat: $('#sweep-repeat').checked,
     filterInputs: Object.fromEntries(['addr1', 'addr2', 'addr3'].map(k => [k, $(`#filter-${k}`).value])),
   };
   try { localStorage.setItem(preferencesKey, JSON.stringify(preferences)); } catch (_) { /* Storage may be unavailable. */ }
@@ -22,6 +26,10 @@ function restorePreferences() {
   let saved;
   try { saved = JSON.parse(localStorage.getItem(preferencesKey)); } catch (_) { return; }
   if (!saved || typeof saved !== 'object') return;
+  for (const id of sweepValueFields) {
+    if (typeof saved.sweepInputs?.[id] === 'string') $(`#${id}`).value = saved.sweepInputs[id];
+  }
+  $('#sweep-repeat').checked = saved.sweepRepeat === true;
   const view = $$('.nav').find(b => b.dataset.view === saved.view);
   if (view) {
     $$('.nav,.view').forEach(x => x.classList.remove('active'));
@@ -66,10 +74,18 @@ function handle(m) {
   else if (m.event === 'frames') onFrames(d);
   else if (m.event === 'frames.clear') { state.frames = []; state.verifiedFrames = []; state.selectedFrame = null; state.liveCandidate = null; state.liveCandidateAt = 0; if (state.points === 'frame') selectPoints('corrected'); renderFrames(); renderConstellation(); renderChannelResponse(); }
   else if (m.event === 'snapshot') { state.snapshot = d; selectPoints('snapshot'); const a = $('#download'); a.href = d.download; a.hidden = false; toast(`Snapshot ${d.capture_id}: ${d.samples} samples`); }
-  else if (m.event === 'sweep.start') { state.sweep = {tiles: [], range: [(d.start_mhz - d.step_mhz / 2) * 1e6, (d.stop_mhz + d.step_mhz / 2) * 1e6]}; $('#sweep-progress').textContent = `0 / ${d.steps}`; $('#scale-start').textContent = `${d.start_mhz} MHz`; $('#scale-stop').textContent = `${d.stop_mhz} MHz`; }
-  else if (m.event === 'sweep.tile') { state.sweep.tiles[d.index] = d; $('#sweep-progress').textContent = `${d.index + 1} / ${d.total} · gain ${d.gain_index}`; renderSweep(); }
-  else if (m.event === 'sweep.done') { $('#sweep-progress').textContent = `${d.state} · ${d.seconds} s`; toast(`Sweep ${d.state} in ${d.seconds} s`); }
-  else if (m.event === 'calibration.progress') { $('#calibration-auto-cancel').hidden = false; $('#calibration-auto-progress').textContent = `Measuring gain ${d.gain} of ${d.total - 1} · ${d.accepted} accepted · ${d.skipped} skipped`; }
+  else if (m.event === 'sweep.start') beginSweep(d);
+  else if (m.event === 'sweep.tile') collectSweepPeek(d);
+  else if (m.event === 'sweep.done') {
+    if (d.job !== state.sweep.job) return;
+    delete state.sweep.pending;
+    delete state.sweep.radioSettings;
+    $('#start-sweep').textContent = 'Play';
+    renderSweepRadioSettings();
+    $('#sweep-progress').textContent = `${d.state} · ${d.seconds} s`;
+    toast(`Sweep ${d.state} in ${d.seconds} s`);
+  }
+  else if (m.event === 'calibration.progress') { $('#calibration-auto-cancel').hidden = false; $('#calibration-auto-progress').textContent = `Measuring gain ${d.gain} of ${d.end_gain ?? d.total - 1} · ${d.accepted} accepted · ${d.skipped} skipped`; }
   else if (m.event === 'calibration.done') {
     $('#calibration-auto-cancel').hidden = true;
     const points = Array.isArray(d.points) ? d.points : [];
@@ -81,7 +97,11 @@ function handle(m) {
     }
     $('#calibration-auto-progress').textContent = d.error ? `Calibration failed: ${d.error}` : d.cancelled ? 'Calibration cancelled.' : `Finished: ${points.length} gains calibrated, ${d.skipped.length} skipped (insufficient consistent captures).`;
   }
-  else if (m.event === 'error') { $('#calibration-auto-progress').textContent = d.message; toast(d.message); }
+  else if (m.event === 'error') {
+    const message = d.message?.includes('iq_sweep') && d.message.includes('dwell_ms=') && d.message.includes('EINVAL')
+      ? 'Sweep rejected: analyzer firmware may need the timed sweep update.' : d.message;
+    $('#calibration-auto-progress').textContent = message; $('#sweep-progress').textContent = message; toast(message);
+  }
 }
 
 function applyStatus(s) {
@@ -92,7 +112,8 @@ function applyStatus(s) {
   $('#rate-metric').textContent = `${s.captures_per_s}/s`;
   $('#lost').textContent = `${s.lost}${s.errors ? ` · ${s.errors} err` : ''}`;
   $('#run').textContent = s.mode === 'live' ? 'Pause' : 'Play';
-  $('#start-sweep').textContent = s.mode === 'sweep' ? 'Stop sweep' : 'Start sweep';
+  if (s.mode === 'sweep' && s.sweep) beginSweep(s.sweep);
+  $('#start-sweep').textContent = s.mode === 'sweep' ? 'Pause' : 'Play';
   if (state.points !== 'frame' && state.points !== 'snapshot') { renderConstellation(); renderChannelResponse(); }
   const detector = $('#detector-status');
   const sampleRates = Array.isArray(s.detector_sample_rates_hz) ? s.detector_sample_rates_hz.filter(Number.isFinite).map(r => `${r / 1e6} MS/s`).join(', ') : '';
@@ -104,7 +125,7 @@ function applyStatus(s) {
   if (formats.includes('DSSS')) detector.textContent += s.dsss_error ? ` · DSSS error: ${s.dsss_error}` : ` · DSSS/CCK: ${s.dsss_decoded ?? 0} FCS verified / ${s.dsss_attempted ?? 0} bursts, ${s.dsss_dropped ?? 0} skipped`;
 
 
-  if (r.gain_max) $('#gain-index').max = r.gain_max;
+  if (r.gain_max) { $('#gain-index').max = r.gain_max; $('#sweep-gain').max = r.gain_max; }
   if (first) {
     const c = s.config;
     $('#freq').value = c.freq_mhz; $('#rate').value = c.rate_hz; $('#bw').value = c.bw_mhz;
@@ -120,7 +141,7 @@ function onLive(d) {
   state.history.push({t: performance.now(), mean: d.power.mean_dbfs, peak: d.power.peak_dbfs});
   state.history = state.history.slice(-300);
   $('#live-meta').textContent = `${mhz(d.frequency_hz)} · ${d.sample_rate_hz / 1e6} MS/s · ${d.samples} × IQ${d.bits} · gain ${d.gain_index}${d.agc ? ' (AGC)' : ''}`;
-  renderLive(); renderCalibration(); renderPower(d); if (state.points === 'raw' || state.points === 'corrected') { renderConstellation(); renderChannelResponse(); }
+  addWaterfallCapture(d); renderLive(); renderCalibration(); renderPower(d); if (state.points === 'raw' || state.points === 'corrected') { renderConstellation(); renderChannelResponse(); }
 }
 
 function config() {
@@ -209,12 +230,55 @@ function renderLive() {
   spectrumAxisLabels(x, w, h, min, max, axisOffset);
   spectrumFrequencyLabels(x, w, h, freqs[0], freqs[n - 1]);
   $('#live-lo').textContent = mhz(freqs[0]); $('#live-hi').textContent = mhz(freqs[n - 1]);
-  const e = canvas('#live-envelope'); e.x.clearRect(0, 0, e.w, e.h); grid(e.x, e.w, e.h, 10, 3);
-  const env = d.envelope, emin = -60, emax = 5, EY = (v) => e.h - (Math.max(emin, v) - emin) / (emax - emin) * e.h;
-  trace(e.x, env.map((_, i) => i), env, (i) => i / (env.length - 1) * e.w, EY, e.h, '#46a4ff', '#46a4ff22');
-  yLabels(e.x, e.h, emin, emax);
-  $('#env-span').textContent = `${(d.samples / d.sample_rate_hz * 1e6).toFixed(0)} µs`;
+
 }
+
+// A fixed dBFS scale keeps colors comparable across captures. History is reset
+// when frequency geometry changes, so each column always represents one frequency.
+const waterfall = {rows: [], key: null, rowHeight: 3, limit: 600, scroll: '#waterfall-scroll', space: '#waterfall-space', canvas: '#live-waterfall'};
+const sweepWaterfall = {rows: [], key: null, rowHeight: 3, limit: 600, scroll: '#sweep-waterfall-scroll', space: '#sweep-waterfall-space', canvas: '#sweep-waterfall'};
+function waterfallColor(value) {
+  const t = Math.max(0, Math.min(1, (value + 100) / 100));
+  const stops = [[0, 8, 40], [0, 65, 210], [0, 210, 220], [255, 225, 0], [235, 30, 20]];
+  const pos = t * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(pos)), f = pos - i;
+  return stops[i].map((v, c) => Math.round(v + (stops[i + 1][c] - v) * f));
+}
+const waterfallPalette = Array.from({length: 101}, (_, i) => waterfallColor(i - 100));
+function addWaterfallCapture(d, target = waterfall) {
+  const s = d.spectrum;
+  if (!s?.db?.length) return;
+  const key = `${s.start_hz}:${s.bin_hz}:${s.db.length}`;
+  const scroll = $(target.scroll), following = scroll.scrollTop <= 1;
+  const reset = target.key !== key;
+  if (reset) { target.rows = []; target.key = key; scroll.scrollTop = 0; }
+  target.rows.unshift(s.db.slice());
+  if (target.rows.length > target.limit) target.rows.pop();
+  $(target.space).style.height = `${target.rows.length * target.rowHeight}px`;
+  if (!reset && !following && target.rows.length > 1) scroll.scrollTop += target.rowHeight;
+  renderWaterfall(target);
+}
+function renderWaterfall(target = waterfall) {
+  const scroll = $(target.scroll), c = $(target.canvas);
+  const width = Math.round(scroll.clientWidth), height = Math.round(scroll.clientHeight);
+  if (!width || !height || !target.rows.length) return;
+  // The bitmap covers only the visible viewport, independent of history length.
+  c.width = width; c.height = height;
+  c.style.height = `${height}px`;
+  const x = c.getContext('2d'), img = x.createImageData(width, height);
+  for (let y = 0; y < height; y++) {
+    const row = target.rows[Math.floor((scroll.scrollTop + y) / target.rowHeight)];
+    if (!row) continue;
+    for (let px = 0; px < width; px++) {
+      const value = row[Math.min(row.length - 1, Math.floor(px * row.length / width))];
+      const color = waterfallPalette[Math.max(0, Math.min(100, Math.round(Number.isFinite(value) ? value + 100 : 0)))];
+      const i = (y * width + px) * 4;
+      img.data[i] = color[0]; img.data[i + 1] = color[1]; img.data[i + 2] = color[2]; img.data[i + 3] = 255;
+    }
+  }
+  x.putImageData(img, 0, 0);
+}
+$('#waterfall-scroll').addEventListener('scroll', () => renderWaterfall());
+$('#sweep-waterfall-scroll').addEventListener('scroll', () => renderWaterfall(sweepWaterfall));
 
 // Calibration offsets convert a spectrum bin from dBFS to known input dBm.
 const calibrationKey = 'winject-spectrum-calibration-v1';
@@ -222,20 +286,29 @@ function calibrationSettings(d) {
   const c = state.status?.config;
   return c && d && Number.isFinite(d.gain_index) ? {gain: Number(d.gain_index), rate_hz: d.sample_rate_hz, nfft: d.spectrum.db.length, samples: d.samples, detector: c.detector, bw_mhz: Number(c.bw_mhz), bits: d.bits} : null;
 }
-function sameCalibrationSettings(a,b) { return !!(a && b && ['gain','rate_hz','nfft','samples','detector','bw_mhz','bits'].every(k => a[k] === b[k])); }
+function sameCalibrationSettings(a,b) { return !!(a && b && ['gain','bits'].every(k => a[k] === b[k])); }
 function matchingCalibrationSettings(settings) { return (state.calibration?.points || []).filter(p => sameCalibrationSettings(settings, p.settings || state.calibration.settings)); }
 function matchingCalibrationPoints(d) { return matchingCalibrationSettings(calibrationSettings(d)); }
 function calibrationMatches(d) { return matchingCalibrationPoints(d).length > 0; }
 function calibrationMissingReason(settings, agc) {
   if (!state.calibration?.points?.length) return 'No calibration saved in this browser.';
   if (!settings) return 'Capture settings are unavailable.';
-  const keys = ['rate_hz','nfft','samples','detector','bw_mhz','bits'];
-  const matching = state.calibration.points.filter(p => {
-    const pointSettings = p.settings || state.calibration.settings;
-    return pointSettings && keys.every(k => settings[k] === pointSettings[k]);
-  });
-  if (!matching.length) return 'Rate, FFT, samples, detector, bandwidth or bit depth differs from calibration.';
-  const gains = [...new Set(matching.map(p => (p.settings || state.calibration.settings).gain))].sort((a,b)=>a-b);
+  const fields = [['bits', 'IQ bit depth']];
+  const gainsForSettings = new Set();
+  let closest = null;
+  for (const point of state.calibration.points) {
+    const saved = point.settings || state.calibration.settings;
+    const differences = fields.filter(([key]) => settings[key] !== saved[key]);
+    if (!differences.length) gainsForSettings.add(saved.gain);
+    if (saved.gain !== settings.gain) differences.push(['gain', 'Gain']);
+    if (!closest || differences.length < closest.differences.length) closest = {saved, differences};
+  }
+  if (!gainsForSettings.size) {
+    const changes = closest.differences.map(([key, label, format = String]) =>
+      `${label} ${format(settings[key])} → ${format(closest.saved[key])}`);
+    return `Closest saved settings require ${changes.join(' · ')}.`;
+  }
+  const gains = [...gainsForSettings].sort((a,b)=>a-b);
   const shown = gains.slice(0, 8).join(', '), remaining = gains.length > 8 ? ` +${gains.length - 8} more` : '';
   return `Gain ${settings.gain} is uncalibrated${agc ? ' (AGC varies)' : ''}. Calibrated gains: ${shown}${remaining}.`;
 }
@@ -244,7 +317,7 @@ function calibrationAxisNote(d, active) {
   return `dBm unavailable: ${calibrationMissingReason(calibrationSettings(d), d?.agc)}`;
 }
 function validCalibration(c) {
-  const validSettings = s => s && ['gain','rate_hz','nfft','samples','bw_mhz','bits'].every(k => Number.isFinite(s[k])) && ['average','peak'].includes(s.detector);
+  const validSettings = s => s && Number.isFinite(s.gain) && [8,10].includes(s.bits);
   return c?.version === 1 && Array.isArray(c.points) && c.points.length > 0 && c.points.length <= 1000 && c.points.every(p => validSettings(p.settings || c.settings) && Number.isFinite(p.hz) && p.hz > 0 && Number.isFinite(p.measured_dbfs) && Number.isFinite(p.actual_dbm));
 }
 function storeCalibration() { try { if (state.calibration) localStorage.setItem(calibrationKey, JSON.stringify(state.calibration)); else localStorage.removeItem(calibrationKey); } catch (_) {} }
@@ -267,20 +340,26 @@ function renderCalibrationTable() {
     for (const value of [(point.hz/1e6).toFixed(3), `${point.measured_dbfs.toFixed(1)} dBFS`, `${point.actual_dbm.toFixed(1)} dBm`, String((point.settings || state.calibration.settings).gain)]) { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); }
     const cell = document.createElement('td'), button = document.createElement('button'); button.className = 'secondary'; button.textContent = 'Remove'; button.onclick = () => { state.calibration.points = state.calibration.points.filter(p => p !== point); if (!state.calibration.points.length) state.calibration = null; storeCalibration(); renderCalibrationTable(); renderLive(); renderCalibration(); }; cell.appendChild(button); row.appendChild(cell); body.appendChild(row);
   }
-  const d = state.live;
-  $('#calibration-status').textContent = !state.calibration ? 'No calibration' : calibrationMatches(d) ? `Calibration active · gain ${d.gain_index}` : `Calibration inactive${Number.isFinite(d?.gain_index) ? ` · gain ${d.gain_index}` : ''}`;
-  $('#calibration-status').title = calibrationAxisNote(d, calibrationMatches(d));
+  renderCalibrationStatus(state.live);
   renderFrames(); renderChannelResponse();
 }
-function renderCalibration() {
+function renderCalibrationStatus(d) {
   const status = $('#calibration-status');
-  status.textContent = !state.calibration ? 'No calibration' : calibrationMatches(state.live) ? `Calibration active · gain ${state.live.gain_index}` : `Calibration inactive${Number.isFinite(state.live?.gain_index) ? ` · gain ${state.live.gain_index}` : ''}`;
-  status.title = calibrationAxisNote(state.live, calibrationMatches(state.live));
-  const d = state.live; if (!d?.spectrum?.db?.length) return;
+  const active = calibrationMatches(d);
+  const gain = Number.isFinite(d?.gain_index) ? ` · gain ${d.gain_index}` : '';
+  const reason = state.calibration && !active ? calibrationMissingReason(calibrationSettings(d), d?.agc) : '';
+  status.textContent = !state.calibration ? 'No calibration' : active ? `Calibration active${gain}` : `Calibration inactive${gain}. ${reason}`;
+  status.title = reason || calibrationAxisNote(d, active);
+  return active;
+}
+function renderCalibration() {
+  const d = state.live;
+  const active = renderCalibrationStatus(d);
+  if (!d?.spectrum?.db?.length) return;
   const {x,w,h} = canvas('#calibration-spectrum'); if (!w || !h) return;
   x.clearRect(0,0,w,h); grid(x,w,h);
   const s=d.spectrum, n=s.db.length, freq=i=>s.start_hz+i*s.bin_hz, raw=s.db;
-  const active=calibrationMatches(d), offsets=active ? calibrationOffsets() : [];
+  const offsets=active ? calibrationOffsets() : [];
   const axisOffset=active ? calibrationOffset(d.frequency_hz, offsets) : null;
   const {min,max}=spectrumScale('calibration', raw, 'dBFS', d), X=i=>i/(n-1)*w, Y=v=>h-(v-min)/(max-min)*h;
   trace(x, raw.map((_,i)=>i), raw, X, Y, h, '#36e5d2', '#36e5d222');
@@ -298,27 +377,32 @@ function renderCalibration() {
   $('#calibration-axis-note').title=$('#calibration-axis-note').textContent;
   $('#calibration-lo').textContent=mhz(freq(0)); $('#calibration-hi').textContent=mhz(freq(n-1));
 }
-function calibrationToneIndex(s) {
-  const n = s.db.length, middle = Math.floor(n / 2);
-  const centerGuard = Math.max(2, Math.ceil(500000 / s.bin_hz));
-  let best = -1;
-  for (let i = 2; i < n - 2; i++) {
-    if (Math.abs(i - middle) <= centerGuard || !Number.isFinite(s.db[i])) continue;
-    if (best < 0 || s.db[i] > s.db[best]) best = i;
-  }
-  return best;
-}
 $('#calibration-auto').onclick = () => {
   const s = state.live?.spectrum;
   if (state.status?.mode !== 'live' || !s?.db?.length) { toast('Start live capture to calibrate'); return; }
-  const peak = calibrationToneIndex(s);
-  if (peak < 0) { $('#calibration-auto-progress').textContent = 'No usable spectrum bins. Set a tone away from the center frequency.'; return; }
-  const tone = s.start_hz + peak * s.bin_hz;
-  $('#calibration-auto-frequency').value = String(tone / 1e6);
-  $('#calibration-auto-tone').textContent = `Suggested peak outside the center spur: ${mhz(tone)}. Set this field to your signal generator frequency before starting.`;
+  $('#calibration-auto-frequency').value = '';
+  const gainMax = Number(state.status?.radio?.gain_max);
+  $('#calibration-gain-start').value = '0';
+  $('#calibration-gain-end').value = Number.isInteger(gainMax) && gainMax >= 0 ? String(gainMax) : '';
+  $('#calibration-auto-tone').textContent = 'Enter a frequency, click the tone, or use the current peak. The selected frequency stays fixed during the sweep.';
   $('#calibration-auto-power').value = ''; $('#calibration-auto-form').hidden = false; $('#calibration-auto-power').focus();
 };
 $('#calibration-auto-close').onclick = () => { $('#calibration-auto-form').hidden = true; };
+$('#calibration-use-peak').onclick = () => {
+  const s = state.live?.spectrum;
+  if (state.status?.mode !== 'live' || !s?.db?.length) { toast('Start live capture to select a peak'); return; }
+  const n = s.db.length, middle = Math.floor(n / 2);
+  const guard = Math.max(4, Math.ceil(500000 / s.bin_hz));
+  let peak = -1;
+  for (let i = 4; i < n - 4; i++) {
+    if (Math.abs(i - middle) <= guard || !Number.isFinite(s.db[i])) continue;
+    if (peak < 0 || s.db[i] > s.db[peak]) peak = i;
+  }
+  if (peak < 0) { $('#calibration-auto-tone').textContent = 'No usable peak outside the center spur and spectrum edges.'; return; }
+  const tone = s.start_hz + peak * s.bin_hz;
+  $('#calibration-auto-frequency').value = String(tone / 1e6);
+  $('#calibration-auto-tone').textContent = `Selected peak ${mhz(tone)} · ${s.db[peak].toFixed(1)} dBFS. Confirm this is the reference tone; frequency stays fixed during the sweep.`;
+};
 $('#calibration-auto-form').onsubmit = e => {
   e.preventDefault(); const value = $('#calibration-auto-power').value, frequency = $('#calibration-auto-frequency').value;
   const s = state.live?.spectrum, tone = Number(frequency) * 1e6;
@@ -326,7 +410,10 @@ $('#calibration-auto-form').onsubmit = e => {
   const index = Math.round((tone - s.start_hz) / s.bin_hz), middle = Math.floor(s.db.length / 2);
   if (index < 4 || index >= s.db.length - 4 || Math.abs(index - middle) <= 4) { $('#calibration-auto-tone').textContent = 'Tone must be within the spectrum and away from the center frequency (DC).'; return; }
   if (ws?.readyState !== WebSocket.OPEN) { toast('Host disconnected'); return; }
-  send({op:'calibration.start', power_dbm:Number(value), tone_hz:tone});
+  const first = $('#calibration-gain-start').value, last = $('#calibration-gain-end').value;
+  const startGain = Number(first), endGain = Number(last), gainMax = Number(state.status?.radio?.gain_max);
+  if (!first.trim() || !last.trim() || !Number.isInteger(startGain) || !Number.isInteger(endGain) || startGain < 0 || endGain < startGain || !Number.isInteger(gainMax) || endGain > gainMax) { $('#calibration-auto-tone').textContent = `Choose a gain range from 0 to ${Number.isInteger(gainMax) ? gainMax : 'the receiver limit'}, with start no greater than end.`; return; }
+  send({op:'calibration.start', power_dbm:Number(value), tone_hz:tone, start_gain:startGain, end_gain:endGain});
   $('#calibration-auto-form').hidden = true; $('#calibration-auto-progress').textContent = 'Starting gain sweep…';
 };
 $('#calibration-auto-cancel').onclick = () => send({op:'calibration.cancel'});
@@ -354,7 +441,14 @@ $('#calibration-cancel').onclick = () => { pendingCalibration=null; $('#calibrat
 $('#calibration-spectrum').onclick = e => {
   const s=state.live?.spectrum, r=e.currentTarget.getBoundingClientRect();
   if (!s?.db?.length || !r.width) { toast('Start live capture to calibrate'); return; }
-  addCalibrationPoint(Math.max(0,Math.min(s.db.length-1,Math.round((e.clientX-r.left)/r.width*(s.db.length-1)))));
+  const i = Math.max(0,Math.min(s.db.length-1,Math.round((e.clientX-r.left)/r.width*(s.db.length-1))));
+  if (!$('#calibration-auto-form').hidden) {
+    const tone = s.start_hz + i * s.bin_hz;
+    $('#calibration-auto-frequency').value = String(tone / 1e6);
+    $('#calibration-auto-tone').textContent = `Selected ${mhz(tone)} · ${s.db[i].toFixed(1)} dBFS. Confirm this is the reference tone.`;
+    return;
+  }
+  addCalibrationPoint(i);
 };
 $('#calibration-peak').onclick = () => {
   const values=state.live?.spectrum?.db;
@@ -422,6 +516,60 @@ function framePowerText(value, offset) {
   if (!Number.isFinite(value)) return 'Unavailable';
   return `${value.toFixed(2)} dBFS${Number.isFinite(offset) ? ` (${(value + offset).toFixed(1)} dBm)` : ''}`;
 }
+// mpdu_hex excludes the four FCS bytes in both decoder backends.
+function frameSize(f) {
+  return f?.fcs_ok && typeof f.mpdu_hex === 'string' && /^(?:[0-9a-f]{2})+$/i.test(f.mpdu_hex) ? f.mpdu_hex.length / 2 + 4 : null;
+}
+function decodeWinject(f) {
+  const hex = f?.mpdu_hex;
+  if (!f?.fcs_ok || typeof hex !== 'string' || !/^(?:[0-9a-f]{2})+$/i.test(hex)) return null;
+  const bytes = hex.match(/../g).map(x => parseInt(x, 16));
+  // Mpdu::rescan accepts plain data frames with no flags and exact slot layout.
+  if (bytes.length < 24 || bytes[0] !== 0x08 || bytes[1] !== 0 ||
+      bytes.slice(16, 20).join(',') !== '202,254,186,190') return null;
+  const packed = bytes.slice(4, 16);
+  const sizes = Array.from({length: 5}, (_, i) => {
+    let value = 0;
+    for (let bit = 0; bit < 11; bit++) {
+      const n = 1 + i * 11 + bit;
+      value |= ((packed[Math.floor(n / 8)] >> (n % 8)) & 1) << bit;
+    }
+    return value;
+  });
+  if (sizes.reduce((a, b) => a + b, 0) !== bytes.length - 24) return null;
+  let offset = 24;
+  const slots = sizes.map((size, index) => {
+    const slot = {index, size, offset, bus: size ? bytes[offset] : null};
+    offset += size;
+    return slot;
+  });
+  return {domain: (bytes[20] << 8) | bytes[21], slots};
+}
+function renderMpdu(f, winject) {
+  const el = $('#frame-mpdu'), hex = f?.mpdu_hex;
+  el.replaceChildren();
+  if (!hex) { el.textContent = 'Not decoded'; return; }
+  if (!winject) { el.textContent = hex; return; }
+  const add = (start, end, className, title) => {
+    if (end <= start) return;
+    const span = document.createElement('span');
+    span.className = className; span.title = title;
+    span.textContent = hex.slice(start * 2, end * 2); el.appendChild(span);
+  };
+  add(0, 24, 'mpdu-header', '802.11 / winject header');
+  for (const slot of winject.slots) {
+    if (!slot.size) continue;
+    add(slot.offset, slot.offset + 1, `mpdu-bus slot-${slot.index}`, `Slot ${slot.index} bus: 0x${slot.bus.toString(16).padStart(2, '0')}`);
+    add(slot.offset + 1, slot.offset + slot.size, `mpdu-pdu slot-${slot.index}`, `Slot ${slot.index} PDU`);
+  }
+}
+function frameRowValues(f) {
+  const address = frameAddresses(f);
+  return [`${f.capture_id}.${f.start_sample}`, readable(f.phy), modulationRate(f),
+    evmText(f.evm_percent), framePowerText(f.frame_mean_dbfs, frameCalibrationOffset(f)),
+    f.frame_clipped === true ? 'Yes' : f.frame_clipped === false ? 'No' : 'Unavailable',
+    readable(address.addr3), f.status || 'Candidate', frameSize(f) === null ? 'Unavailable' : `${frameSize(f)} B`];
+}
 function renderFrames() {
   const list = visibleFrames();
   const allCount = state.frames.length + state.verifiedFrames.length;
@@ -430,8 +578,7 @@ function renderFrames() {
   for (const f of list) {
     const tr = document.createElement('tr');
     if (state.selectedFrame && frameId(state.selectedFrame) === frameId(f)) tr.classList.add('selected');
-    const a = frameAddresses(f);
-    for (const value of [f.capture_id, f.start_sample, readable(f.phy), modulationRate(f), readable(a.addr3), f.status || 'Candidate']) {
+    for (const value of frameRowValues(f)) {
       const td = document.createElement('td'); td.textContent = String(value); tr.appendChild(td);
     }
     tr.onclick = () => { $('#frames-scroll').focus(); selectFrame(f); };
@@ -447,17 +594,14 @@ function renderFrames() {
   for (const key of ['addr1', 'addr2', 'addr3']) $(`#frame-${key}`).textContent = f ? readable(a[key]) : '—';
   $('#frame-evm').textContent = f ? evmText(f.evm_percent) : 'Unavailable';
   $('#frame-status').textContent = f ? [f.reason || f.status || 'Preamble candidate; frame not decoded.', f.fcs_ok ? f.evm_warning : f.training_warning].filter(Boolean).join(' ') : 'Decoded frame fields appear when available.';
-  $('#frame-mpdu').textContent = f?.mpdu_hex || 'Not decoded';
-  $('#frame-gain').textContent = Number.isFinite(f?.gain_index) ? `${f.gain_index} (${f.agc === true ? 'AGC' : f.agc === false ? 'manual' : 'mode unknown'}; capture start)` : 'Unavailable';
-  const frameOffsets = f?.calibration_settings ? calibrationOffsets(f.calibration_settings) : [];
+  const winject = decodeWinject(f);
+  renderMpdu(f, winject);
+  $('#frame-winject').textContent = winject ? [`Domain: 0x${winject.domain.toString(16).padStart(4, '0')}`, `MPDU: ${frameSize(f)} B`, ...winject.slots.map(s => `#${s.index}: ${s.size} B${s.bus === null ? '' : ` · bus 0x${s.bus.toString(16).padStart(2, '0')}`}`)].join('\n') : 'Not a decoded winject frame';
+  $('#frame-gain').textContent = Number.isFinite(f?.gain_index) ? `${f.gain_index} (${f.agc === true ? 'AGC' : f.agc === false ? 'manual' : 'mode unknown'})` : 'Unavailable';
   const frameOffset = frameCalibrationOffset(f);
-  const framePower = f?.fcs_ok && Number.isFinite(f.frame_rssi_dbfs) && Number.isFinite(frameOffset) && typeof f.frame_clipped === 'boolean';
-  $('#frame-dbm').textContent = framePower ? `${(f.frame_rssi_dbfs + frameOffset).toFixed(1)} dBm${f.frame_clipped ? ' ⚠' : ''}` : 'Unavailable';
-  const outsideFrameCal = framePower && (f.frequency_hz < frameOffsets[0].hz || f.frequency_hz > frameOffsets[frameOffsets.length - 1].hz);
-  $('#frame-rssi-note').textContent = framePower ? `${f.frame_clipped ? 'Clipped samples: this estimate may be inaccurate. ' : ''}${f.agc ? 'Uses capture-start gain; AGC may change during the frame.' : 'Uses capture-start gain.'} Includes noise and interference.${outsideFrameCal ? ' Using the nearest calibration frequency.' : ''}` : !f ? '' : !Number.isFinite(f.frame_rssi_dbfs) ? 'RSSI requires a complete decoded OFDM frame.' : !f.calibration_settings ? 'RSSI unavailable: capture settings were not recorded.' : typeof f.frame_clipped !== 'boolean' ? 'RSSI unavailable: frame clipping status was not recorded.' : `RSSI unavailable: ${calibrationMissingReason(f.calibration_settings, f.agc)}`;
   for (const [id, key] of [['peak', 'frame_peak_dbfs'], ['mean', 'frame_mean_dbfs']]) $(`#frame-${id}`).textContent = framePowerText(f?.[key], frameOffset);
   const fields = ['frame_type', 'frame_subtype', 'to_ds', 'from_ds', 'protected', 'sequence', 'fragment', 'header_length', 'addr4'];
-  $('#frame-decoded').textContent = f?.fcs_ok ? fields.filter(k => f[k] !== undefined && f[k] !== null).map(k => `${k.replaceAll('_', ' ')}: ${f[k]}`).join('\n') || 'No additional fields' : 'Not decoded';
+  $('#frame-decoded').textContent = f?.fcs_ok ? [frameSize(f) === null ? null : `frame size: ${frameSize(f)} B`, ...fields.filter(k => f[k] !== undefined && f[k] !== null).map(k => `${k.replaceAll('_', ' ')}: ${f[k]}`)].filter(Boolean).join('\n') || 'No additional fields' : 'Not decoded';
 }
 function freshLiveCandidate() {
   return state.liveCandidate;
@@ -480,9 +624,9 @@ function constellationGrid(x, w, h) {
 }
 function drawTraining(src) {
   const {x,w,h} = canvas('#training-canvas'); x.clearRect(0,0,w,h); const plot = constellationGrid(x,w,h);
-  const points = src?.training_constellation || [];
+  const points = src?.raw_training_iq || [];
   $('#training-empty').hidden = points.length > 0;
-  $('#training-empty').textContent = src ? 'Training symbols unavailable for this frame' : 'Waiting for training symbols';
+  $('#training-empty').textContent = src ? 'Raw training IQ unavailable for this frame' : 'Waiting for frame samples';
   x.fillStyle = '#36e5d2aa';
   for (const p of points) if (Number.isFinite(p[0]) && Number.isFinite(p[1])) { x.beginPath(); x.arc(plot.cx+p[0]*plot.scale,plot.cy-p[1]*plot.scale,2,0,7); x.fill(); }
 }
@@ -503,7 +647,13 @@ function renderConstellation() {
     x.fillStyle = isFrame ? '#ffb86b99' : '#46a4ff99';
     for (const [i, q] of valid) { x.beginPath(); x.arc(plot.cx + i * plot.scale, plot.cy - q * plot.scale, 1.8, 0, 7); x.fill(); }
   }
-  drawTraining(src);
+  drawTraining(candidate);
+  const raw = Array.isArray(candidate?.raw_data_iq) ? candidate.raw_data_iq.filter(p => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1])) : [];
+  const rawCanvas = canvas('#raw-data-canvas'); rawCanvas.x.clearRect(0, 0, rawCanvas.w, rawCanvas.h); const rawPlot = constellationGrid(rawCanvas.x, rawCanvas.w, rawCanvas.h);
+  $('#raw-data-empty').hidden = raw.length > 0;
+  $('#raw-data-empty').textContent = candidate ? 'Raw data IQ unavailable for this frame' : 'Waiting for frame samples';
+  rawCanvas.x.fillStyle = '#46a4ff99';
+  for (const [i, q] of raw) { rawCanvas.x.beginPath(); rawCanvas.x.arc(rawPlot.cx + i * rawPlot.scale, rawPlot.cy - q * rawPlot.scale, 1.8, 0, 7); rawCanvas.x.fill(); }
   $('#c-kind').textContent = isFrame ? 'SELECTED FRAME' : corrected ? (src ? `LIVE FRAME · CAPTURE ${src.capture_id}` : 'LIVE · WAITING FOR COMPLETE FRAME') : snapshot ? `SNAPSHOT #${src?.capture_id ?? '—'}` : 'LIVE RAW IQ';
   $('#c-title').textContent = showPayload ? 'Decoded data-field constellation' : corrected ? 'Corrected constellation' : snapshot ? 'Frozen raw IQ' : 'Raw baseband IQ';
   const trainingName = src?.training_kind || (/ofdm/i.test(src?.phy || '') || /ofdm/i.test(src?.detection || '') ? 'L-LTF' : 'Training');
@@ -518,28 +668,26 @@ function renderConstellation() {
 }
 function renderChannelResponse() {
   const candidate = displayedCandidate();
-  if (state.framePlot !== 'channel') { renderFrameWaveform(candidate); return; }
-  $('#channel-note').textContent = 'Relative channel magnitude; gain is not calibrated.';
-  $('#plot-scale').textContent = '−26 subcarriers                                 0                                 +26 subcarriers';
+  renderFrameWaveform(candidate);
   const isOfdm = /ofdm/i.test(candidate?.phy || '') || /ofdm/i.test(candidate?.detection || '');
   const values = (isOfdm && Array.isArray(candidate?.channel_estimate) ? candidate.channel_estimate : []).filter(p => Array.isArray(p) && p.length >= 3 && p.every(Number.isFinite)).sort((a,b) => a[0] - b[0]);
-  const {x, w, h} = canvas('#channel-canvas'); x.clearRect(0, 0, w, h); grid(x, w, h, 13, 4);
-  if (!values.length) { $('#channel-meta').textContent = candidate && !isOfdm ? 'No OFDM subcarrier estimate for this PHY' : 'No current channel estimate'; return; }
+  const {x, w, h} = canvas('#response-canvas'); x.clearRect(0, 0, w, h); grid(x, w, h, 13, 4);
+  if (!values.length) { $('#response-meta').textContent = candidate && !isOfdm ? 'No OFDM subcarrier estimate for this PHY' : 'No current channel estimate'; return; }
   const magnitude = values.map(p => Math.hypot(p[1], p[2]));
   const peak = Math.max(...magnitude);
-  if (!(peak > 0)) { $('#channel-meta').textContent = 'No usable channel estimate'; return; }
+  if (!(peak > 0)) { $('#response-meta').textContent = 'No usable channel estimate'; return; }
   const db = magnitude.map(v => Math.max(-40, 20 * Math.log10(Math.max(v / peak, 1e-4))));
   const pad=16, X=k => pad + (k + 26) / 52 * (w - 2 * pad), Y=v => 8 + (-v / 40) * (h - 20);
   trace(x, values.map(p=>p[0]), db, X, Y, h, '#36e5d2');
   x.fillStyle = '#7f97a3'; x.font = '11px monospace'; x.fillText('0 dB', 5, 12); x.fillText('−40 dB', 5, h - 6);
   const time = Number.isFinite(candidate.timestamp_us) ? ` · device trigger ~${candidate.timestamp_us} µs (u32)` : '';
-  $('#channel-meta').textContent = `${state.points === 'frame' ? 'Selected' : 'Live'} candidate · capture ${candidate.capture_id} · sample ${candidate.start_sample}${time} · ${values.length} carriers`;
+  $('#response-meta').textContent = `${state.points === 'frame' ? 'Selected' : 'Live'} candidate · capture ${candidate.capture_id} · sample ${candidate.start_sample}${time} · ${values.length} carriers`;
 }
 function renderFrameWaveform(frame) {
   const fft = state.framePlot === 'fft', values = fft ? frame?.frame_spectrum_db : frame?.frame_envelope_db;
   const {x,w,h} = canvas('#channel-canvas'); x.clearRect(0,0,w,h); grid(x,w,h);
-  const offset = fft ? null : frameCalibrationOffset(frame);
-  $('#channel-note').textContent = fft ? 'Mean spectral power across the complete decoded frame · dBFS (relative).' : Number.isFinite(offset) ? `Peak power per time bucket; dBm is estimated using capture-start gain.${frame?.agc ? ' AGC may change during the frame.' : ''}${frame?.frame_clipped ? ' Samples clipped.' : ''}` : 'Peak power per time bucket · dBFS. dBm requires matching calibration.';
+  const offset = frameCalibrationOffset(frame);
+  $('#channel-note').textContent = fft ? (Number.isFinite(offset) ? `Mean spectral power per FFT bin · dBm estimated using center-frequency calibration and capture-start gain.${frame?.agc ? ' AGC may change during the frame.' : ''}${frame?.frame_clipped ? ' Samples clipped.' : ''}` : 'Mean spectral power per FFT bin · dBFS. dBm requires matching calibration.') : Number.isFinite(offset) ? `Peak power per time bucket; dBm is estimated using capture-start gain.${frame?.agc ? ' AGC may change during the frame.' : ''}${frame?.frame_clipped ? ' Samples clipped.' : ''}` : 'Peak power per time bucket · dBFS. dBm requires matching calibration.';
   $('#plot-scale').textContent = fft ? `−${(frame?.sample_rate_hz || 0)/2e6} MHz                                +${(frame?.sample_rate_hz || 0)/2e6} MHz` : `0 µs                                ${frame?.frame_duration_us ?? '—'} µs`;
   if (!Array.isArray(values) || values.length < 2) { $('#channel-meta').textContent = 'Complete frame waveform unavailable'; return; }
   const min = Math.floor(Math.min(...values)/10)*10, max = Math.max(min+10, Math.ceil(Math.max(...values)/10)*10);
@@ -568,15 +716,146 @@ function renderPower(d) {
   yLabels(x, h, min, max);
 }
 
+function beginSweep(sweep) {
+  if (state.sweep.job === sweep.job) return;
+  sweepWaterfall.rows = []; sweepWaterfall.key = null;
+  $('#sweep-waterfall-space').style.height = '0px';
+  $('#sweep-waterfall-scroll').scrollTop = 0;
+  const sweepCanvas = $('#sweep-waterfall');
+  sweepCanvas.getContext('2d').clearRect(0, 0, sweepCanvas.width, sweepCanvas.height);
+  const end = sweep.end_mhz ?? sweep.stop_mhz;
+  state.sweep = {job: sweep.job, pending: [], stepHz: sweep.step_mhz * 1e6,
+    range: [sweep.start_mhz * 1e6, end * 1e6]};
+  $('#start-sweep').textContent = 'Pause';
+  $('#sweep-progress').textContent = `0 / ${sweep.steps}`;
+  $('#sweep-progress-bar').value = 0;
+  $('#scale-start').textContent = `${sweep.start_mhz} MHz`;
+  $('#scale-stop').textContent = `${end} MHz`;
+  renderSweepRadioSettings();
+  renderSweep();
+}
+
+function collectSweepPeek(tile) {
+  const sweep = state.sweep;
+  if (!sweep.pending || tile.job !== sweep.job) return;
+  sweep.radioSettings = tile.calibration_settings;
+  renderSweepRadioSettings();
+  if (tile.index === 0) sweep.pending = [];
+  if (tile.index !== sweep.pending.length || !(tile.total > 0) || tile.index >= tile.total) return;
+  $('#sweep-progress').textContent = `${tile.index + 1} / ${tile.total} · gain ${tile.gain_index}`;
+  $('#sweep-progress-bar').value = (tile.index + 1) / tile.total * 100;
+  sweep.pending.push(tile);
+  if (sweep.pending.length !== tile.total) return;
+
+  const peeks = sweep.pending;
+  const {power, binHz} = combineSweepPeeks(peeks, ...sweep.range, sweep.stepHz);
+  sweep.power = averageSweepPower(sweep.power, power);
+  addWaterfallCapture({spectrum: {start_hz: sweep.range[0], bin_hz: binHz, db: Array.from(sweep.power, v => v > 0 ? 10 * Math.log10(v) : NaN)}}, sweepWaterfall);
+  sweep.binHz = binHz;
+  const settings = peeks[0].calibration_settings;
+  sweep.settings = settings && peeks.every(t => sameCalibrationSettings(settings, t.calibration_settings)) ? settings : null;
+  sweep.pending = [];
+  renderSweep();
+}
+
+function averageSweepPower(previous, current) {
+  if (!previous || previous.length !== current.length) return current;
+  return current.map((value, i) => previous[i] > 0 && value > 0 ? 0.2 * previous[i] + 0.8 * value : value);
+}
+
+function sweepTaper(distance, width) {
+  const x = Math.max(0, Math.min(1, distance / width));
+  return x * x * (3 - 2 * x);
+}
+
+function combineSweepPeeks(tiles, lo, hi, stepHz) {
+  const binHz = tiles[0].bin_hz;
+  const power = new Float64Array(Math.floor((hi - lo) / binHz) + 1);
+  const weights = new Float64Array(power.length);
+  for (const tile of tiles) {
+    const end = tile.start_hz + (tile.bins.length - 1) * tile.bin_hz;
+    const edgeWidth = Math.max(binHz, (end - tile.start_hz - stepHz) / 2);
+    const first = Math.max(0, Math.ceil((tile.start_hz - lo) / binHz));
+    const last = Math.min(power.length - 1, Math.floor((end - lo) / binHz));
+    const samples = tile.bins.map(db => 10 ** (db / 10));
+    for (let i = first; i <= last; i++) {
+      const f = lo + i * binHz;
+      // Fade overlapping edges and the region around the receiver's DC spur.
+      const edge = Math.min(f - tile.start_hz, end - f) + tile.bin_hz / 2;
+      const fromDc = Math.abs(f - tile.frequency_hz) - (tile.dc_guard_hz || 0);
+      const dcWeight = tile.dc_guard_hz ? sweepTaper(fromDc, Math.max(binHz, 500_000)) : 1;
+      const weight = sweepTaper(edge, edgeWidth) * dcWeight;
+      const source = Math.max(0, Math.min(samples.length - 1, (f - tile.start_hz) / tile.bin_hz));
+      const left = Math.floor(source), right = Math.min(left + 1, samples.length - 1);
+      const value = samples[left] + (source - left) * (samples[right] - samples[left]);
+      power[i] += value * weight;
+      weights[i] += weight;
+    }
+  }
+  for (let i = 0; i < power.length; i++) {
+    if (weights[i] > 0) power[i] /= weights[i];
+  }
+  return {power, binHz};
+}
+
+let sweepCursor = null;
+function updateSweepTooltip() {
+  const tooltip = $('#sweep-tooltip'), {power, binHz, range, settings} = state.sweep;
+  if (!sweepCursor || !power || !range || !(binHz > 0)) { tooltip.hidden = true; return; }
+  const rect = $('#sweep-canvas').getBoundingClientRect();
+  const fraction = (sweepCursor.x - rect.left) / rect.width;
+  if (!(fraction >= 0 && fraction <= 1) || sweepCursor.y < rect.top || sweepCursor.y > rect.bottom) { tooltip.hidden = true; return; }
+  const hz = range[0] + fraction * (range[1] - range[0]);
+  const index = Math.round((hz - range[0]) / binHz);
+  const value = power[index];
+  if (!(value > 0) || !Number.isFinite(value)) { tooltip.hidden = true; return; }
+  const db = 10 * Math.log10(value), offsets = settings ? calibrationOffsets(settings) : [];
+  tooltip.textContent = `${(hz / 1e6).toFixed(3)} MHz\n${db.toFixed(1)} dBFS${offsets.length ? ` (${(db + calibrationOffset(hz, offsets)).toFixed(1)} dBm)` : ''}`;
+  tooltip.hidden = false;
+  tooltip.style.left = `${Math.max(0, Math.min(sweepCursor.x + 12, window.innerWidth - tooltip.offsetWidth - 4))}px`;
+  tooltip.style.top = `${Math.max(0, Math.min(sweepCursor.y + 12, window.innerHeight - tooltip.offsetHeight - 4))}px`;
+}
+$('#sweep-canvas').addEventListener('mousemove', e => { sweepCursor = {x: e.clientX, y: e.clientY}; updateSweepTooltip(); });
+$('#sweep-canvas').addEventListener('mouseleave', () => { sweepCursor = null; updateSweepTooltip(); });
+
 function renderSweep() {
-  const {x, w, h} = canvas('#sweep-canvas'); x.clearRect(0, 0, w, h); grid(x, w, h, 10, 8);
-  const tiles = state.sweep.tiles.filter(Boolean); if (!tiles.length) return;
-  const fs = [], vs = [];
-  for (const t of tiles) t.bins.forEach((v, j) => { fs.push(t.start_hz + (j + .5) * t.bin_hz); vs.push(v); });
-  const [lo, hi] = state.sweep.range ?? [fs[0], fs[fs.length - 1]];
-  const min = Math.floor(Math.min(...vs) / 10) * 10 - 5, max = Math.ceil(Math.max(...vs) / 10) * 10 + 5;
-  trace(x, fs, vs, (f) => (f - lo) / (hi - lo) * w, (v) => h - (v - min) / (max - min) * h, h, '#36e5d2', '#36e5d222');
-  yLabels(x, h, min, max);
+  updateSweepTooltip();
+  const {x, w, h} = canvas('#sweep-canvas'); if (!w || !h) return;
+  x.clearRect(0, 0, w, h); grid(x, w, h, 10, 4);
+  const {power, binHz, range, settings} = state.sweep;
+  if (!power) return;
+  const [lo, hi] = range;
+  const db = power.map(value => 10 * Math.log10(value));
+  let low = Infinity, high = -Infinity;
+  for (const value of db) {
+    if (!Number.isFinite(value)) continue;
+    low = Math.min(low, value);
+    high = Math.max(high, value);
+  }
+  if (!Number.isFinite(low)) return;
+  const min = Math.floor(low / 10) * 10 - 5, max = Math.ceil(high / 10) * 10 + 5;
+  const X = f => (f - lo) / (hi - lo) * w, Y = v => h - (v - min) / (max - min) * h;
+  x.strokeStyle = '#36e5d2';
+  x.lineWidth = 1.3;
+  x.beginPath();
+  let connected = false;
+  for (let i = 0; i < power.length; i++) {
+    if (!Number.isFinite(db[i])) {
+      connected = false;
+      continue;
+    }
+    const px = X(lo + i * binHz), py = Y(db[i]);
+    if (connected) x.lineTo(px, py);
+    else x.moveTo(px, py);
+    connected = true;
+  }
+  x.stroke();
+  const offsets = settings ? calibrationOffsets(settings) : [];
+  const offset = offsets.length ? calibrationOffset((lo + hi) / 2, offsets) : null;
+  spectrumAxisLabels(x, w, h, min, max, offset);
+  spectrumFrequencyLabels(x, w, h, lo, hi);
+  $('#scale-start').textContent = mhz(lo); $('#scale-stop').textContent = mhz(hi);
+  $('#sweep-axis-note').textContent = offsets.length ? 'dBm scale uses center-frequency calibration.' : `dBm unavailable: ${calibrationMissingReason(settings, false)}`;
 }
 
 // --- controls ---------------------------------------------------------------------
@@ -611,15 +890,43 @@ for (const key of ['addr1', 'addr2', 'addr3']) {
   });
 }
 $('#clear-filters').onclick = () => { for (const key of ['addr1', 'addr2', 'addr3']) $(`#filter-${key}`).value = ''; state.filters = {addr1: '', addr2: '', addr3: ''}; state.fcsOnly = false; $('#filter-fcs').checked = false; $('#filter-error').textContent = ''; filtersChanged(); savePreferences(); };
+const sweepRateHz = 40_000_000;
+const sweepLpfMhz = 20;
+
+function renderSweepRadioSettings() {
+  const rate = state.sweep.radioSettings?.rate_hz ?? sweepRateHz;
+  const lpf = state.sweep.radioSettings?.bw_mhz ?? sweepLpfMhz;
+  $('#sweep-sample-rate').textContent = `${rate / 1e6} MS/s`;
+  $('#sweep-lpf').textContent = lpf ? `${lpf} MHz` : 'Auto';
+}
+
+function applySweepSettings() {
+  const fields = sweepNumberFields.map(name => $(`#sweep-${name}`));
+  if (fields.some(el => !el.value.trim() || (el.validity && !el.validity.valid))) { toast('Check sweep capture settings'); return; }
+  const [start, end, bw, overlap, time, gain] = fields.map(el => Number(el.value));
+  // Adjacent peeks must cover each other's tuning centers away from the edges.
+  const step = Math.min(bw - overlap, Math.max(1, Math.floor(bw * 0.4)));
+  const stop = start + Math.ceil((end - start) / step) * step;
+  if (![start,end,bw,overlap,time,gain].every(Number.isInteger) || start < 100 || end > 6000 || end <= start || bw < 2 || bw > sweepLpfMhz || overlap < 0 || step < 1 || time < 1 || time > 1000 || gain < 0 || gain > Number($('#sweep-gain').max || 81) || stop > 6000) { toast('Check frequency range, bandwidth, overlap and peek time'); return; }
+  savePreferences();
+  send({op:'sweep', start_mhz:start, end_mhz:end, stop_mhz:stop, step_mhz:step, rate_hz:sweepRateHz, lpf_mhz:sweepLpfMhz, peek_bw_mhz:bw,
+    gain, fft:state.status?.config?.nfft || 1024, samples:state.status?.config?.n || 16380, bits:Number($('#sweep-bits').value), dwell_ms:time, detector:$('#detector').value, repeat:$('#sweep-repeat').checked});
+}
+
 $('#start-sweep').onclick = () => {
-  if (state.status?.mode === 'sweep') { send({op: 'stop_sweep'}); return; }
-  const start = +$('#sweep-start').value, stop = +$('#sweep-stop').value;
-  if (start < 1850 || stop > 2850) toast('Note: outside the ESPARGOS-measured 1850–2850 MHz range');
-  send({op: 'sweep', start_mhz: start, stop_mhz: stop, step_mhz: +$('#sweep-step').value, rate_hz: +$('#sweep-rate').value,
-    fft: +$('#sweep-fft').value, dwell: +$('#sweep-dwell').value, detector: $('#detector').value, repeat: $('#sweep-repeat').checked});
+  if (state.sweep.pending) send({op: 'stop_sweep'});
+  else applySweepSettings();
 };
-function renderAll() { renderLive(); renderCalibration(); renderConstellation(); renderChannelResponse(); renderFrames(); if (state.live) renderPower(state.live); renderSweep(); }
+for (const id of [...sweepValueFields, 'sweep-repeat']) {
+  $(`#${id}`).addEventListener('change', () => {
+    if (state.sweep.pending) applySweepSettings();
+    else savePreferences();
+  });
+}
+
+function renderAll() { renderLive(); renderWaterfall(); renderWaterfall(sweepWaterfall); renderCalibration(); renderConstellation(); renderChannelResponse(); renderFrames(); if (state.live) renderPower(state.live); renderSweep(); }
 addEventListener('resize', renderAll);
 restorePreferences();
+renderSweepRadioSettings();
 loadCalibration();
 connect();

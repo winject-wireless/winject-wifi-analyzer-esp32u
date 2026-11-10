@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Winject WiFi Analyzer</title>
-    <link rel="stylesheet" href="style.css?v=9">
+    <link rel="stylesheet" href="style.css?v=14">
   </head>
   <body>
     <header class="topbar">
@@ -18,6 +18,7 @@
     <aside class="rail" aria-label="Analyzer views">
       <button class="nav active" data-view="constellation"><span>⠿</span>802.11</button>
       <button class="nav" data-view="live"><span>⌇</span>Spectrum</button>
+      <button class="nav" data-view="sweep"><span>⌁</span>Sweep</button>
       <button class="nav" data-view="calibration"><span>⊕</span>Calibration</button>
     </aside>
 
@@ -27,7 +28,7 @@
         <div id="spectrum-settings"></div>
         <div class="section-heading"><div><p class="eyebrow">ESP-SDR raw baseband</p><h1>Live spectrum</h1></div><div class="segmented"><button class="active" data-detector="average">Average</button><button data-detector="peak">Peak hold</button></div></div>
         <article class="panel spectrum-panel"><div class="panel-title"><h2>Spectrum</h2><span id="live-meta">Waiting for samples…</span></div><canvas id="live-spectrum"></canvas><div class="spectrum-scale"><span id="live-lo">—</span><span id="live-axis-note"></span><span id="live-hi">—</span></div></article>
-        <article class="panel envelope-panel"><div class="panel-title"><h2>Envelope</h2><span>Peak |x| across one capture · bursts and frames show up here</span></div><canvas id="live-envelope"></canvas><div class="spectrum-scale"><span>0 µs</span><span id="env-span">—</span></div></article>
+        <article class="panel waterfall-panel"><div class="panel-title"><h2>Waterfall</h2><span>Newest at top · scroll to inspect history · blue −100 to red 0 dBFS</span></div><div id="waterfall-scroll" class="waterfall-scroll" tabindex="0" aria-label="Spectrum waterfall history"><div id="waterfall-space" class="waterfall-space"><canvas class="waterfall-canvas" id="live-waterfall" aria-label="Spectrum waterfall, newest captures at top"></canvas></div></div></article>
       </section>
 
       <section id="view-calibration" class="view">
@@ -36,14 +37,14 @@
         <div class="calibration-layout">
           <article class="panel calibration-table"><h2>Measurement points</h2>
             <p class="note">Use a steady known tone. The gain sweep measures nine captures per gain and rejects clipped, weak or inconsistent measurements.</p>
-            <p id="calibration-status" class="note" role="status" title="Calibration matches gain, sample rate, FFT size, sample count, detector, bandwidth and sample format. Offsets interpolate by frequency. AGC can change the gain."></p>
-            <form id="calibration-auto-form" class="calibration-entry" hidden><label>Current tone power at analyzer input (dBm)<input id="calibration-auto-power" type="number" step="any" required></label><label>Tone frequency (MHz)<input id="calibration-auto-frequency" type="number" step="any" required></label><p id="calibration-auto-tone" class="note"></p><div><button class="primary" type="submit">Start gain sweep</button> <button id="calibration-auto-close" class="secondary" type="button">Cancel</button></div></form>
+            <p id="calibration-status" class="note" role="status" title="Calibration matches gain and bit depth. Offsets interpolate by frequency. AGC can change the gain."></p>
+            <form id="calibration-auto-form" class="calibration-entry" hidden><label>Current tone power at analyzer input (dBm)<input id="calibration-auto-power" type="number" step="any" required></label><label>Tone frequency (MHz)<input id="calibration-auto-frequency" type="number" step="any" required></label><label>Start gain<input id="calibration-gain-start" type="number" min="0" step="1" value="0" required></label><label>End gain<input id="calibration-gain-end" type="number" min="0" step="1" required></label><button id="calibration-use-peak" class="secondary" type="button">Use current peak</button><p id="calibration-auto-tone" class="note"></p><div><button class="primary" type="submit">Start gain sweep</button> <button id="calibration-auto-close" class="secondary" type="button">Cancel</button></div></form>
             <p id="calibration-auto-progress" class="note" role="status"></p><button id="calibration-auto-cancel" class="secondary" hidden>Cancel sweep</button>
             <form id="calibration-entry" class="calibration-entry" hidden><strong id="calibration-selection"></strong><label>Known input power (dBm)<input id="calibration-power" type="number" step="any" required></label><div><button class="primary" type="submit">Add point</button> <button id="calibration-cancel" class="secondary" type="button">Cancel</button></div></form>
             <div class="table-scroll"><table><thead><tr><th>MHz</th><th>Measured</th><th>Actual</th><th>Gain</th><th></th></tr></thead><tbody id="calibration-body"></tbody></table></div>
             <div class="calibration-actions"><button id="calibration-auto" class="primary">Calibrate all gains</button><button id="calibration-peak" class="secondary">Add strongest peak</button><button id="calibration-load" class="secondary">Load JSON</button><button id="calibration-save" class="secondary">Save JSON</button><button id="calibration-reset" class="secondary">Reset</button><input id="calibration-file" type="file" accept="application/json,.json" hidden></div>
           </article>
-          <article class="panel spectrum-panel"><div class="panel-title"><h2>Spectrum</h2><span>Click a bin to add a measurement</span></div><canvas id="calibration-spectrum" aria-label="Calibration spectrum; click a bin to add a measurement"></canvas><div class="spectrum-scale"><span id="calibration-lo">—</span><span id="calibration-axis-note"></span><span id="calibration-hi">—</span></div></article>
+          <article class="panel spectrum-panel"><div class="panel-title"><h2>Spectrum</h2><span>Click a tone to select it during gain calibration; otherwise add a point</span></div><canvas id="calibration-spectrum" aria-label="Calibration spectrum; click a tone to select it or add a measurement"></canvas><div class="spectrum-scale"><span id="calibration-lo">—</span><span id="calibration-axis-note"></span><span id="calibration-hi">—</span></div></article>
         </div>
       </section>
 
@@ -58,18 +59,23 @@
         <label><span class="setting-name">Samples</span><select id="n"><option>4096</option><option>8192</option><option selected>16380</option></select></label>
         <label><span class="setting-name">Bits</span><select id="bits"><option>8</option><option>10</option></select></label>
 
-        <button id="run" class="primary">Pause</button>
-        <div class="metric"><small>Captures</small><strong id="rate-metric">—</strong></div>
-        <div class="metric"><small>Lost</small><strong id="lost">0</strong></div>
+        <div class="capture-status">
+          <button id="run" class="primary">Pause</button>
+          <div class="metric"><small>Captures</small><strong id="rate-metric">—</strong></div>
+          <div class="metric"><small>Lost</small><strong id="lost">0</strong></div>
+        </div>
       </section>
 
-          <article class="panel frame-detail"><p class="eyebrow">FRAME DETAILS</p><h3 id="frame-title">Choose a frame</h3><div class="detail-grid"><span>PHY</span><strong id="frame-phy">—</strong><span>Modulation / rate</span><strong id="frame-modulation">—</strong><span>Capture gain</span><strong id="frame-gain">Unavailable</strong><span>Data EVM</span><strong id="frame-evm">Unavailable</strong><span>Peak power</span><strong id="frame-peak">Unavailable</strong><span>Average power</span><strong id="frame-mean">Unavailable</strong><span>RSSI (estimate)</span><strong id="frame-dbm">Unavailable</strong><span>Address 1</span><strong id="frame-addr1">—</strong><span>Address 2</span><strong id="frame-addr2">—</strong><span>Address 3</span><strong id="frame-addr3">—</strong></div><p id="frame-rssi-note" class="note"></p><p id="frame-status" class="note">Decoded frame fields appear when available.</p><h4>Decoded 802.11</h4><pre id="frame-decoded">Not decoded</pre><h4>MPDU</h4><pre id="frame-mpdu">Not decoded</pre></article></div>
-          <div class="plots-column"><article class="panel plot-panel data-plot"><div class="panel-title"><h2>Data constellation</h2><span id="c-kind">LIVE</span><button id="return-live" class="secondary" hidden>Resume live</button></div><canvas id="constellation-canvas"></canvas><p id="data-empty" class="plot-empty">Waiting for decoded data symbols</p><div class="axis x">In-phase (I)</div><div class="axis y">Quadrature (Q)</div></article>
-          <div class="plot-bottom"><article class="panel training-panel"><div class="panel-title"><h2>Training constellation</h2></div><div class="training-plot"><canvas id="training-canvas"></canvas><p id="training-empty" class="plot-empty">Waiting for training symbols</p><div class="axis x">In-phase (I)</div><div class="axis y">Quadrature (Q)</div></div></article>
-          <article class="panel channel-panel"><div class="plot-tabs segmented"><button class="active" data-frame-plot="channel">Channel response</button><button data-frame-plot="fft">FFT</button><button data-frame-plot="envelope">Frame envelope</button></div><span id="channel-meta">Waiting for a frame</span><canvas id="channel-canvas" aria-label="Selected frame plot"></canvas><div id="plot-scale" class="spectrum-scale"><span>−26 subcarriers</span><span>0</span><span>+26 subcarriers</span></div><p id="channel-note" class="channel-note">Relative channel magnitude; gain is not calibrated.</p></article></div></div>
+          <article class="panel frame-detail"><p class="eyebrow">FRAME DETAILS</p><h3 id="frame-title">Choose a frame</h3><div class="detail-grid"><span>PHY</span><strong id="frame-phy">—</strong><span>Modulation / rate</span><strong id="frame-modulation">—</strong><span>Capture gain</span><strong id="frame-gain">Unavailable</strong><span>Data EVM</span><strong id="frame-evm">Unavailable</strong><span>Peak power</span><strong id="frame-peak">Unavailable</strong><span>Average power</span><strong id="frame-mean">Unavailable</strong><span>Address 1</span><strong id="frame-addr1">—</strong><span>Address 2</span><strong id="frame-addr2">—</strong><span>Address 3</span><strong id="frame-addr3">—</strong></div><p id="frame-status" class="note">Decoded frame fields appear when available.</p><div class="frame-protocols"><section><h4>Decoded 802.11</h4><pre id="frame-decoded">Not decoded</pre></section><section><h4>Winject frame</h4><pre id="frame-winject">Not decoded</pre></section></div><h4>MPDU <small>header · bus · PDU</small></h4><pre id="frame-mpdu" tabindex="0" aria-label="MPDU">Not decoded</pre></article></div>
+          <div class="plots-column">
+          <article class="panel plot-panel data-plot"><div class="panel-title"><h2>Corrected data IQ</h2><span id="c-kind">LIVE</span><button id="return-live" class="secondary" hidden>Resume live</button></div><canvas id="constellation-canvas"></canvas><p id="data-empty" class="plot-empty">Waiting for decoded data symbols</p><div class="axis x">In-phase (I)</div><div class="axis y">Quadrature (Q)</div></article>
+          <article class="panel plot-panel data-plot raw-data-panel"><div class="panel-title"><h2 title="Channel-equalized data subcarriers before pilot phase correction">Raw data IQ</h2></div><canvas id="raw-data-canvas"></canvas><p id="raw-data-empty" class="plot-empty">Waiting for frame samples</p><div class="axis x">In-phase (I)</div><div class="axis y">Quadrature (Q)</div></article>
+          <article class="panel plot-panel data-plot raw-training-panel"><div class="panel-title"><h2 title="Channel-equalized L-LTF subcarriers; L-LTF has no pilots">Raw training IQ</h2></div><canvas id="training-canvas"></canvas><p id="training-empty" class="plot-empty">Waiting for frame samples</p><div class="axis x">In-phase (I)</div><div class="axis y">Quadrature (Q)</div></article>
+          <article class="panel channel-panel response-panel"><div class="panel-title"><h2>Channel response</h2></div><span id="response-meta">Waiting for a frame</span><canvas id="response-canvas" aria-label="Channel response"></canvas><div class="spectrum-scale"><span>−26 subcarriers</span><span>0</span><span>+26 subcarriers</span></div><p class="channel-note">Relative channel magnitude; gain is not calibrated.</p></article>
+          <article class="panel channel-panel waveform-panel"><div class="plot-tabs segmented"><button class="active" data-frame-plot="fft">FFT</button><button data-frame-plot="envelope">Frame envelope</button></div><span id="channel-meta">Waiting for a frame</span><canvas id="channel-canvas" aria-label="Selected frame waveform"></canvas><div id="plot-scale" class="spectrum-scale"></div><p id="channel-note" class="channel-note"></p></article></div>
           <article class="panel frames-panel"><div class="frames-heading"><div><h2>Captured frames</h2><p id="detector-status">Starting detector…</p></div><span id="frame-count" class="frame-count">0</span></div>
           <div class="frame-filters"><label class="check"><input id="filter-fcs" type="checkbox"> Validated FCS only</label><label>Address 1<input id="filter-addr1" placeholder="Any"></label><label>Address 2<input id="filter-addr2" placeholder="Any"></label><label>Address 3<input id="filter-addr3" placeholder="Any"></label><button id="clear-filters" class="secondary">Clear filters</button><span id="filter-error" role="status"></span></div>
-          <div id="frames-scroll" class="table-scroll" tabindex="0" aria-label="Captured frames; use up and down arrows to select"><table><thead><tr><th>Capture</th><th>Sample</th><th>PHY</th><th>Modulation / rate</th><th>Address 3</th><th>Result</th></tr></thead><tbody id="frames-body"></tbody></table><div id="frames-empty" class="empty">Listening for candidates…</div></div></article></div>
+          <div id="frames-scroll" class="table-scroll" tabindex="0" aria-label="Captured frames; use up and down arrows to select"><table><thead><tr><th>Capture.Sample</th><th>PHY</th><th>Modulation / rate</th><th>Data EVM</th><th>Average power</th><th>Clipped</th><th>Address 3</th><th>Result</th><th>Frame size</th></tr></thead><tbody id="frames-body"></tbody></table><div id="frames-empty" class="empty">Listening for candidates…</div></div></article></div>
           <div hidden><span id="c-title"></span><span id="c-description"></span><span id="c-points"></span><span id="c-freq"></span><span id="c-rate"></span><span id="c-evm-label"></span><span id="c-evm"></span><span id="c-evm-note"></span><button id="snapshot"></button><a id="download"></a></div>
       </section>
 
@@ -82,12 +88,29 @@
       </section>
 
       <section id="view-sweep" class="view">
-        <div class="section-heading"><div><p class="eyebrow">ESP-SDR tuning range</p><h1>Spectrum sweep</h1></div><button id="start-sweep" class="primary">Start sweep</button></div>
-        <article class="panel sweep-controls"><label>Start<input id="sweep-start" type="number" value="2350"><span>MHz</span></label><label>Stop<input id="sweep-stop" type="number" value="2550"><span>MHz</span></label><label>Step<input id="sweep-step" type="number" value="10"><span>MHz</span></label><label>Detector<select id="detector"><option value="average">Average</option><option value="peak">Peak</option></select></label><label>Rate<select id="sweep-rate"><option value="16000000">16 MS/s</option><option value="40000000">40 MS/s</option></select></label><label>FFT<select id="sweep-fft"><option>256</option><option selected>512</option><option>1024</option></select></label><label>Dwell<input id="sweep-dwell" type="number" min="1" max="256" value="8"></label><label class="check"><input id="sweep-repeat" type="checkbox">Repeat</label><div class="range-note">ESPARGOS measured range: <b>1850–2850 MHz</b></div></article>
-        <article class="panel spectrum-panel"><div class="panel-title"><h2>Wideband power</h2><span id="sweep-progress">Ready</span></div><canvas id="sweep-canvas"></canvas><div class="spectrum-scale"><span id="scale-start">—</span><span id="scale-stop">—</span></div></article>
+        <div class="section-heading"><div><p class="eyebrow">ESP-SDR tuning range</p><h1>Spectrum sweep</h1></div></div>
+        <section class="panel sweep-controls"><h2>Capture settings</h2>
+          <label><span class="sweep-setting-name">Gain index</span><input id="sweep-gain" type="number" min="0" max="81" step="1" value="40"></label>
+          <label><span class="sweep-setting-name">Bit depth</span><select id="sweep-bits"><option value="8">8 bit</option><option value="10">10 bit</option></select></label>
+          <label><span class="sweep-setting-name">Peek BW</span><input id="sweep-bw" type="number" min="2" max="20" step="1" value="12"><span>MHz</span></label>
+          <label><span class="sweep-setting-name">Min overlap</span><input id="sweep-overlap" type="number" min="0" step="1" value="2"><span>MHz</span></label>
+          <label><span class="sweep-setting-name">Peek time</span><input id="sweep-time" type="number" min="1" max="1000" step="1" value="50"><span>ms</span></label>
+          <label><span class="sweep-setting-name">Peek sampling</span><select id="detector"><option value="average">Average</option><option value="peak">Max</option></select></label>
+          <label><span class="sweep-setting-name">Start freq</span><input id="sweep-start" type="number" min="100" max="6000" step="1" value="2400"><span>MHz</span></label>
+          <label><span class="sweep-setting-name">End freq</span><input id="sweep-stop" type="number" min="100" max="6000" step="1" value="2500"><span>MHz</span></label>
+          <label class="check"><input id="sweep-repeat" type="checkbox">Repeat</label>
+          <div class="sweep-actions"><button id="start-sweep" class="primary">Play</button></div>
+          <div class="sweep-radio-settings">
+            <span>Sample rate <output id="sweep-sample-rate">40 MS/s</output></span>
+            <span>LPF <output id="sweep-lpf">20 MHz</output></span>
+          </div>
+          <p class="range-note">The trace blends overlapping peeks and averages completed sweeps. Extra overlap covers each tuning center. Measured tuning range: 1850–2850 MHz.</p>
+        </section>
+        <article class="panel spectrum-panel"><div class="panel-title"><h2>Wideband spectrum</h2><span id="sweep-progress">Ready</span></div><progress id="sweep-progress-bar" max="100" value="0" aria-label="Current sweep progress"></progress><canvas id="sweep-canvas" aria-label="Spectrum sweep in dBFS by frequency"></canvas><div id="sweep-tooltip" class="sweep-tooltip" hidden></div><div class="spectrum-scale"><span id="scale-start">—</span><span id="sweep-axis-note">dBm requires matching calibration.</span><span id="scale-stop">—</span></div></article>
+        <article class="panel waterfall-panel"><div class="panel-title"><h2>Waterfall</h2><span>One row per completed sweep · newest at top · blue −100 to red 0 dBFS</span></div><div id="sweep-waterfall-scroll" class="waterfall-scroll" tabindex="0" aria-label="Sweep waterfall history"><div id="sweep-waterfall-space" class="waterfall-space"><canvas id="sweep-waterfall" class="waterfall-canvas" aria-label="Sweep waterfall, newest sweeps at top"></canvas></div></div></article>
       </section>
     </main>
     <div id="toast" role="status"></div>
-    <script type="module" src="app.js?v=18"></script>
+    <script type="module" src="app.js?v=26"></script>
   </body>
 </html>

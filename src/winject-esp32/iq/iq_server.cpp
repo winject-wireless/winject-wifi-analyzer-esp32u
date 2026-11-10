@@ -62,6 +62,7 @@ struct job
     uint16_t stop_mhz = 0;
     uint16_t step_mhz = 0;
     uint16_t dwell = 1;
+    uint16_t dwell_ms = 0;
     netstack::udp_peer peer;
     bool peer_resolved = false;
 };
@@ -279,7 +280,9 @@ void run_sweep_job(const job& j, uint32_t gen)
         for (unsigned s = 0; s < steps; ++s)
         {
             const unsigned f = j.start_mhz + s * j.step_mhz;
-            for (unsigned d = 0; d < j.dwell; ++d)
+            TickType_t started = 0;
+            bool timing_started = false;
+            for (unsigned d = 0; j.dwell_ms || d < j.dwell; ++d)
             {
                 if (!wait_for_network(gen))
                 {
@@ -294,7 +297,15 @@ void run_sweep_job(const job& j, uint32_t gen)
                 }
                 m.step = static_cast<uint16_t>(s);
                 m.steps = static_cast<uint16_t>(steps);
-                if (d + 1 == j.dwell)
+                if (j.dwell_ms && !timing_started)
+                {
+                    started = xTaskGetTickCount();
+                    timing_started = true;
+                }
+                const bool last = j.dwell_ms
+                    ? (xTaskGetTickCount() - started >= pdMS_TO_TICKS(j.dwell_ms))
+                    : (d + 1 == j.dwell);
+                if (last)
                 {
                     m.flags |= k_flag_last_in_step;
                     if (s + 1 == steps)
@@ -308,6 +319,7 @@ void run_sweep_job(const job& j, uint32_t gen)
                 }
                 if (!send_capture(j, words, m)) vTaskDelay(pdMS_TO_TICKS(10));
                 else vTaskDelay(1);
+                if (last) break;
             }
         }
     }
@@ -596,11 +608,11 @@ void cmd_capture(char* args_text, mplane_reply& reply)
 void cmd_sweep(char* args_text, mplane_reply& reply)
 {
     static const char* const k_keys[] = {"start", "stop", "step", "n",      "rate",
-                                         "bits",  "dwell", "passes", "dst", nullptr};
+                                         "bits",  "dwell", "dwell_ms", "passes", "dst", nullptr};
     mplane_args args;
     job j;
     j.kind = job_kind::sweep;
-    unsigned long start_mhz = 0, stop_mhz = 0, step = 0, dwell = 1, passes = 1;
+    unsigned long start_mhz = 0, stop_mhz = 0, step = 0, dwell = 1, dwell_ms = 0, passes = 1;
     if (!args.parse(args_text) || !args.only(k_keys) || !parse_common(args, &j, 1024) ||
         args.get_uint("start", IQ_RADIO_FREQ_MIN_MHZ, IQ_RADIO_FREQ_MAX_MHZ, &start_mhz) !=
             mplane_args::status::ok ||
@@ -608,6 +620,8 @@ void cmd_sweep(char* args_text, mplane_reply& reply)
             mplane_args::status::ok ||
         args.get_uint("step", 1, 80, &step) != mplane_args::status::ok ||
         args.get_uint("dwell", 1, 256, &dwell) == mplane_args::status::invalid ||
+        args.get_uint("dwell_ms", 1, 1000, &dwell_ms) == mplane_args::status::invalid ||
+        (args.find("dwell") && args.find("dwell_ms")) ||
         args.get_uint("passes", 0, 1000000, &passes) == mplane_args::status::invalid ||
         stop_mhz < start_mhz || (stop_mhz - start_mhz) / step + 1 > 6000)
     {
@@ -618,6 +632,7 @@ void cmd_sweep(char* args_text, mplane_reply& reply)
     j.stop_mhz = static_cast<uint16_t>(stop_mhz);
     j.step_mhz = static_cast<uint16_t>(step);
     j.dwell = static_cast<uint16_t>(dwell);
+    j.dwell_ms = static_cast<uint16_t>(dwell_ms);
     j.count = static_cast<uint32_t>(passes);
     start(j, reply, "iq_sweep");
 }

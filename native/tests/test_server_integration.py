@@ -10,7 +10,7 @@ def control():
   if cmd.startswith('iq_info'): result='kind='+state['mode']+' gain_max=2'
   elif cmd.startswith('iq_capture'):
    state.update(mode='capture',calibration='count=9' in cmd,job_id=state['job_id']+1,capture_count=0);result=f"capture id={state['job_id']}"
-  elif cmd.startswith('iq_sweep'):state.update(mode='sweep',job=11);result='sweep id=11'
+  elif cmd.startswith('iq_sweep'):state.update(mode='sweep',job=11,sweep_command=cmd);result='sweep id=11'
   elif cmd.startswith('iq_stop'):state['mode']='idle';result='stop'
   elif cmd.startswith('iq_set gain='):state['gain']=int(cmd.split()[1].split('=')[1]);result='set'
   else:result='set'
@@ -56,7 +56,7 @@ async def run():
     if data['event']==name:return data['data']
   st=await event('status');assert st['mode']=='live';print('status',st['decoder_formats'],st['decoder_backend'])
   data=await event('live');assert data['samples']==1024 and len(data['spectrum']['db'])==1024;print('live',data['capture_id'],data['samples'])
-  await ws.send(json.dumps({'op':'calibration.start','power_dbm':-60,'tone_hz':2410000000+79*40000000/1024})); done=await event('calibration.done');assert not done['error'] and len(done['points'])==3,done;assert all(p['measurements']==9 and p['inliers']==7 and abs(p['measured_dbfs']-20*math.log10(24*4/511))<.2 for p in done['points']),done;print('calibration rejects clipping and outliers; restores live')
+  await ws.send(json.dumps({'op':'calibration.start','power_dbm':-60,'tone_hz':2410000000+79*40000000/1024,'start_gain':1,'end_gain':2})); done=await event('calibration.done');assert not done['error'] and len(done['points'])==2 and [p['settings']['gain'] for p in done['points']]==[1,2],done;assert all(p['measurements']==9 and p['inliers']==7 and abs(p['measured_dbfs']-20*math.log10(24*4/511))<.2 for p in done['points']),done;print('calibration rejects clipping and outliers; restores live')
   await ws.send(json.dumps({'op':'snapshot'}));snap=await event('snapshot');assert snap['samples']==1024
   assert len(urllib.request.urlopen('http://127.0.0.1:58082/capture/snapshot.cf32').read())==8192;print('snapshot ok')
   state['fixture']='dot11a_24M_40msps_iq8'
@@ -72,6 +72,8 @@ async def run():
   assert header['signal_length_bytes']==len(payload['mpdu_hex'])//2+4 and header['signal_modulation']=='16-QAM'
   assert not header.get('fcs_ok',False) and payload['fcs_ok']
   assert payload['constellation'] and payload['training_constellation'] and payload['channel_estimate']
+  assert payload['raw_training_iq'] and payload['raw_data_iq']
+  assert len(payload['raw_training_iq']) <= 1024 and len(payload['raw_data_iq']) <= 1024
   assert payload['frame_spectrum_db'] and payload['frame_envelope_db'] and payload['frame_duration_us'] > 0
   assert math.isfinite(payload['frame_rssi_dbfs']) and isinstance(payload['frame_clipped'],bool)
   assert payload['calibration_settings']['gain']==payload['gain_index'] and payload['calibration_settings']['samples']==16380
@@ -88,7 +90,7 @@ async def run():
    assert first['event']=='status' and second['event']=='frames' and second['data']['history']
    assert any(f.get('mpdu_hex')==expected and f.get('fcs_ok') for f in second['data']['frames'])
   print('DSSS FCS-verified frame and reconnect history ok');state['fixture']=None
-  await ws.send(json.dumps({'op':'sweep','start_mhz':2410,'stop_mhz':2410,'step_mhz':5,'rate_hz':16000000,'fft':512,'dwell':1}));print('sweep.start',await event('sweep.start'));tile=await event('sweep.tile');assert tile['index']==0 and tile['bins'];print('sweep.tile',len(tile['bins']));print('sweep.done',await event('sweep.done'))
+  await ws.send(json.dumps({'op':'sweep','start_mhz':2410,'stop_mhz':2410,'step_mhz':5,'rate_hz':16000000,'fft':512,'dwell_ms':25}));print('sweep.start',await event('sweep.start'));tile=await event('sweep.tile');assert tile['index']==0 and tile['bins'] and tile['calibration_settings']['gain']==20;assert 'dwell_ms=25' in state['sweep_command'];print('sweep.tile',len(tile['bins']));print('sweep.done',await event('sweep.done'))
 try:asyncio.run(run())
 finally:
  stop.set();p.terminate();p.wait(timeout=5);print('server log',p.stderr.read().decode()[-1000:])

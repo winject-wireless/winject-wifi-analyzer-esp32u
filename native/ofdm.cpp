@@ -668,7 +668,7 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
         const Rate* info = &state.info;
         if (len < 14) continue;
         bool bad = false;
-        auto symbol = [&](int start, int pol, std::array<C, 48>& out) -> bool
+        auto symbol = [&](int start, int pol, std::array<C, 48>& out, std::array<C, 48>& before_pilot) -> bool
         {
             if (start + 80 > int(z.size()))
             {
@@ -700,7 +700,9 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
             {
                 if (k && k != -21 && k != -7 && k != 7 && k != 21)
                 {
-                    out[j++] = a[(k + 64) % 64] * rot;
+                    before_pilot[j] = a[(k + 64) % 64];
+                    out[j] = before_pilot[j] * rot;
+                    j++;
                 }
             }
             return true;
@@ -712,7 +714,7 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
         }
         int ncbps = 48 * info->bpsc, spacing = std::max(info->bpsc / 2, 1);
         std::vector<uint8_t> coded;
-        std::vector<C> points, ideals;
+        std::vector<C> points, ideals, raw_points;
         static const int map1[] = {-1, 1}, map2[] = {-3, -1, 3, 1},
                          map3[] = {-7, -5, -1, -3, 7, 5, 1, 3};
         int half = info->bpsc / 2;
@@ -722,8 +724,8 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
                                          : std::sqrt(42.);
         for (int si = 0; si < n; si++)
         {
-            std::array<C, 48> q;
-            if (!symbol(first + 208 + si * 80, si + 1, q))
+            std::array<C, 48> q, before_pilot;
+            if (!symbol(first + 208 + si * 80, si + 1, q, before_pilot))
             {
                 bad = true;
                 break;
@@ -767,6 +769,7 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
                         (index >> (info->bpsc - 1 - b)) & 1;
                 }
                 points.push_back(q[j]);
+                if (raw_points.size() < 1024) raw_points.push_back(before_pilot[j]);
                 ideals.push_back(ideal);
             }
             for (int k = 0; k < ncbps; k++)
@@ -825,6 +828,20 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
         out.ltf_start_sample = first * 2 + phase;
         out.frame_end_sample = (first + 128 + 80 * (n + 1)) * 2 + phase;
         out.ltf_match = norm;
+        out.raw_data_iq.assign(raw_points.begin(), raw_points.end());
+        // L-LTF has no pilots. Show both FFT symbols after channel equalization,
+        // using the same CFO-corrected samples and channel as the data symbols.
+        for (int symbol_index = 0; symbol_index < 2; symbol_index++)
+        {
+            std::array<C, 64> training;
+            for (int i = 0; i < 64; i++) training[i] = z[first + symbol_index * 64 + i];
+            fft(training);
+            for (int k = -26; k <= 26; k++) if (k)
+            {
+                int bin = (k + 64) % 64;
+                out.raw_training_iq.emplace_back(training[bin] / h[bin]);
+            }
+        }
         double err = 0, pow = 0;
         for (size_t i = 0; i < points.size(); i++)
         {

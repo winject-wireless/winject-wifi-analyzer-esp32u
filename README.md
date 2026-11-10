@@ -89,6 +89,17 @@ ctest --test-dir build/native --output-on-failure
 ./build/native/winject-wifi-analyzer-cpp --host 192.168.253.14 --http-host 0.0.0.0 --http-port 8081 --web-dir web
 ```
 
+The Sweep page scans a frequency range with a fixed gain. Peek bandwidth and
+frequency overlap select the tuning step; each trace segment uses the center
+of its peek to avoid filter edges. Peek time is elapsed time at each tune, with
+repeated IQ captures during that interval (it is not continuous sampling).
+Average combines linear power and Max retains the highest observed bin power.
+The dBm axis appears when saved calibration matches the sweep's gain and bit
+depth. Choose an unattenuated reference tone when calibrating. The axis
+uses the calibration at the middle of the displayed frequency range. Sweep
+requires firmware supporting the `iq_sweep dwell_ms` argument; update the
+analyzer firmware as well as the host before using this feature.
+
 The Calibration page can sweep manual gain indices using a steady tone at
 known input power. For each gain it takes nine captures, rejects clipped or
 weak captures, and estimates the tone level from a consensus of consistent

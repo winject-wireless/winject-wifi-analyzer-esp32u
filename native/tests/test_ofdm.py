@@ -39,6 +39,29 @@ class NativeOfdmReference(unittest.TestCase):
         self.assertEqual(outputs[0],outputs[1], 'SIMD and scalar decoded different rates')
         return outputs[0]
 
+    def test_pre_pilot_constellation_preserves_payload_phase(self):
+        import test_legacy_ofdm as reference
+        mpdu=bytes.fromhex('08000000 ffffffffffff 102030405060 aabbccddeeff 3012')+b'phase test'
+        original=reference.symbol
+        calls=0
+        def rotated(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            out=original(*args, **kwargs)
+            return out if calls == 1 else out * np.exp(0.4j)
+        with patch('test_legacy_ofdm.symbol', side_effect=rotated):
+            samples,short,long=make_frame(mpdu,rate=24)
+        path=pathlib.Path(self.temp.name)/'phase.cf32'
+        np.asarray(samples,np.complex64).tofile(path)
+        for exe in (self.exe,self.scalar):
+            result=subprocess.run([exe,path,str(short),str(long)],capture_output=True,text=True,check=True)
+            lines=[line for line in result.stderr.splitlines() if line.startswith('iq ')]
+            self.assertTrue(lines)
+            _,ri,rq,ci,cq,training=lines[0].split()
+            phase=np.angle(complex(float(ri),float(rq))/complex(float(ci),float(cq)))
+            self.assertAlmostEqual(phase,0.4,delta=0.03)
+            self.assertEqual(int(training),104)
+
     def test_independent_openofdm_all_rates(self):
         root=ROOT/'tests/fixtures/openofdm'
         for rate in (6,9,12,18,24,36,48,54):
