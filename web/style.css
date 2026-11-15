@@ -246,3 +246,12 @@ body:has(#view-sweep.active){height:100dvh;overflow:hidden}
 .data-plot .panel-title{height:auto;min-height:36px;flex-wrap:wrap;gap:4px 8px;padding-top:4px;padding-bottom:4px}
 #return-live,#frames-resume{flex:none;white-space:nowrap}
 #frames-resume{padding:4px 8px;margin-left:8px}
+/* Scrollbars in the panel palette: the standard properties (Firefox, Chrome 121+)
+   and the WebKit pseudo-elements (Safari, older Chrome). */
+:root{--scroll-thumb:#2a3d4b;--scroll-thumb-hover:#3d5869}
+*{scrollbar-width:thin;scrollbar-color:var(--scroll-thumb) transparent}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-radius:6px;border:2px solid var(--panel)}
+::-webkit-scrollbar-thumb:hover{background:var(--scroll-thumb-hover)}
+::-webkit-scrollbar-thumb:active{background:var(--cyan)}
