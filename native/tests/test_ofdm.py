@@ -87,7 +87,7 @@ class NativeOfdmReference(unittest.TestCase):
     def test_long_frames_use_the_whole_pilot_polarity_sequence(self):
         # Pilot polarity entries past index 68 were wrong, so every frame longer than
         # 68 data symbols failed its FCS. 931 B at 24 Mbit/s (a winject bwtest frame)
-        # is 78 symbols; 54 Mbit/s with 3000 B reaches the sequence wrap at 127.
+        # is 78 symbols; 6 Mbit/s with 400 B (135 symbols) wraps the 127-entry sequence.
         header=bytes.fromhex('08000000 0f0700000000 000000000000 cafebabeb00b f03b')
         for rate,size in ((24,931),(6,400),(54,3000)):
             with self.subTest(rate=rate,size=size):
