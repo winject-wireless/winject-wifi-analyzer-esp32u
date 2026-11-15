@@ -514,7 +514,8 @@ function frameCalibrationOffset(frame) {
   return offsets.length ? calibrationOffset(frame.frequency_hz, offsets) : null;
 }
 // SNR and noise floor are measured in the occupied OFDM band (+-8.125 MHz); the noise
-// floor comes from the quiet part of the same capture (native/snr.hpp).
+// floor comes from the quiet part of the same capture (native/snr.hpp). The L-LTF SNR
+// comes from the decoder: noise is the difference of the two identical LTF symbols.
 function snrText(value) { return Number.isFinite(value) ? `${value.toFixed(1)} dB` : 'Unavailable'; }
 function framePowerText(value, offset) {
   if (!Number.isFinite(value)) return 'Unavailable';
@@ -571,7 +572,7 @@ function frameRowValues(f) {
   const address = frameAddresses(f);
   return [`${f.capture_id}.${f.start_sample}`, readable(f.phy), modulationRate(f),
     evmText(f.evm_percent), framePowerText(f.frame_mean_dbfs, frameCalibrationOffset(f)),
-    snrText(f.snr_db), framePowerText(f.noise_floor_dbfs, frameCalibrationOffset(f)),
+    snrText(f.snr_db), snrText(f.ltf_snr_db), framePowerText(f.noise_floor_dbfs, frameCalibrationOffset(f)),
     f.frame_clipped === true ? 'Yes' : f.frame_clipped === false ? 'No' : 'Unavailable',
     readable(address.addr3), f.status || 'Candidate', frameSize(f) === null ? 'Unavailable' : `${frameSize(f)} B`];
 }
@@ -606,6 +607,7 @@ function renderFrames() {
   const frameOffset = frameCalibrationOffset(f);
   for (const [id, key] of [['peak', 'frame_peak_dbfs'], ['mean', 'frame_mean_dbfs'], ['noise', 'noise_floor_dbfs']]) $(`#frame-${id}`).textContent = framePowerText(f?.[key], frameOffset);
   $('#frame-snr').textContent = snrText(f?.snr_db);
+  $('#frame-ltf-snr').textContent = snrText(f?.ltf_snr_db);
   const fields = ['frame_type', 'frame_subtype', 'to_ds', 'from_ds', 'protected', 'sequence', 'fragment', 'header_length', 'addr4'];
   $('#frame-decoded').textContent = f?.fcs_ok ? [frameSize(f) === null ? null : `frame size: ${frameSize(f)} B`, ...fields.filter(k => f[k] !== undefined && f[k] !== null).map(k => `${k.replaceAll('_', ' ')}: ${f[k]}`)].filter(Boolean).join('\n') || 'No additional fields' : 'Not decoded';
 }

@@ -29,6 +29,7 @@ int main(int argc, char** argv)
                 std::cerr << "iq " << d->raw_data_iq[0].real() << " " << d->raw_data_iq[0].imag()
                           << " " << d->constellation[0].real() << " " << d->constellation[0].imag()
                           << " " << d->raw_training_iq.size() << "\n";
+            std::cerr << "ltf_snr " << d->ltf_snr_db << "\n";
             std::cout << d->rate_mbps << " " << d->mpdu.size() << " "
                       << c.start_sample << " " << c.long_start_sample << "\n";
         }
