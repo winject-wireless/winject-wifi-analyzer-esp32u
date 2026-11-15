@@ -84,6 +84,17 @@ class NativeOfdmReference(unittest.TestCase):
                 bad,short,long=make_frame(mpdu,rate=rate,corrupt_fcs=True)
                 self.assertNotIn(rate,self.decode(bad,short,long))
 
+    def test_long_frames_use_the_whole_pilot_polarity_sequence(self):
+        # Pilot polarity entries past index 68 were wrong, so every frame longer than
+        # 68 data symbols failed its FCS. 931 B at 24 Mbit/s (a winject bwtest frame)
+        # is 78 symbols; 54 Mbit/s with 3000 B reaches the sequence wrap at 127.
+        header=bytes.fromhex('08000000 0f0700000000 000000000000 cafebabeb00b f03b')
+        for rate,size in ((24,931),(6,400),(54,3000)):
+            with self.subTest(rate=rate,size=size):
+                mpdu=header+bytes((i*37)&255 for i in range(size-4-len(header)))
+                samples,short,long=make_frame(mpdu,rate=rate)
+                self.assertIn(rate,self.decode(samples,short,long))
+
     def test_detector_reports_signal_before_payload_fcs(self):
         mpdu=bytes.fromhex('08000000 ffffffffffff 102030405060 aabbccddeeff 3012')+b'legacy OFDM detector'
         path=pathlib.Path(self.temp.name)/'header.cf32'

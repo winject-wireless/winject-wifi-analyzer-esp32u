@@ -131,6 +131,19 @@ class LegacyOFDMTest(unittest.TestCase):
                 self.assertTrue(found[0]['fcs_ok'])
                 self.assertTrue(found[0]['mpdu_hex'])
 
+    def test_pilot_polarity_is_the_80211_scrambler_sequence(self):
+        # IEEE 802.11 17.3.5.10: p_n = 1 - 2 * scrambler output for the all-ones seed.
+        # The generator below uses this table too, so the round trips cannot catch a typo.
+        state, expected = 0x7f, []
+        for _ in range(127):
+            bit = ((state >> 6) ^ (state >> 3)) & 1
+            expected.append(1 - 2 * bit)
+            state = ((state << 1) | bit) & 0x7f
+        self.assertEqual(_POLARITY.tolist(), expected)
+        native = (Path(__file__).resolve().parents[1] / 'native/ofdm.cpp').read_text()
+        table = native.split('polarity[] = {', 1)[1].split('}', 1)[0]
+        self.assertEqual([int(v) for v in table.replace('\n', ' ').split(',') if v.strip()], expected)
+
     def test_synthetic_roundtrip_all_rates(self):
         mpdu=bytes.fromhex('08000000 ffffffffffff 102030405060 aabbccddeeff 3012')+b'legacy OFDM'
         expected={6:'BPSK',9:'BPSK',12:'QPSK',18:'QPSK',24:'16-QAM',36:'16-QAM',48:'64-QAM',54:'64-QAM'}
