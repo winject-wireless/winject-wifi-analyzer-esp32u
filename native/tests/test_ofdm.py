@@ -120,6 +120,32 @@ class NativeOfdmReference(unittest.TestCase):
                 self.assertGreaterEqual(len(got),5,'frame did not decode often enough')
                 self.assertAlmostEqual(float(np.median(got)),target,delta=1.0)
 
+    def test_ltf_snr_ignores_receiver_dc_offset(self):
+        # A receiver DC offset 15 dB above the noise, with a 46 kHz CFO (as seen live):
+        # de-rotated with the frame it became a tone that read as LTF noise next to DC.
+        mpdu=bytes.fromhex('08000000 ffffffffffff 102030405060 aabbccddeeff 3012')+b'ltf dc'*8
+        clean,short,long=make_frame(mpdu,rate=6)
+        clean=clean*np.exp(2j*np.pi*46e3*np.arange(len(clean))/40e6)
+        ltf_power=np.mean(np.abs(clean[long+64:long+64+256])**2)
+        freqs=np.fft.fftfreq(len(clean),1/40e6)
+        band=(np.abs(freqs)<=8.125e6)&(np.abs(freqs)>=312.5e3/2)
+        noise_power=ltf_power/10**(20/10)
+        dc=np.sqrt(noise_power*10**(15/10))*np.exp(0.7j)
+        path=pathlib.Path(self.temp.name)/'ltf-dc.cf32'
+        got=[]
+        for seed in range(7):
+            rng=np.random.default_rng(100+seed)
+            spec=np.zeros(len(clean),complex)
+            spec[band]=rng.normal(size=band.sum())+1j*rng.normal(size=band.sum())
+            noise=np.fft.ifft(spec)
+            noise*=np.sqrt(noise_power/np.mean(np.abs(noise)**2))
+            np.asarray(clean+noise+dc,np.complex64).tofile(path)
+            r=subprocess.run([self.exe,path,str(short),str(long)],capture_output=True,text=True,check=True)
+            values=[float(l.split()[1]) for l in r.stderr.splitlines() if l.startswith('ltf_snr ')]
+            if values: got.append(values[0])
+        self.assertGreaterEqual(len(got),5,'frame did not decode often enough')
+        self.assertAlmostEqual(float(np.median(got)),20,delta=1.0)
+
     def test_detector_reports_signal_before_payload_fcs(self):
         mpdu=bytes.fromhex('08000000 ffffffffffff 102030405060 aabbccddeeff 3012')+b'legacy OFDM detector'
         path=pathlib.Path(self.temp.name)/'header.cf32'
