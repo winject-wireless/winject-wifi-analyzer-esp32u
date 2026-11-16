@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Winject WiFi Analyzer</title>
-    <link rel="stylesheet" href="style.css?v=16">
+    <link rel="stylesheet" href="style.css?v=24">
   </head>
   <body>
     <header class="topbar">
@@ -12,7 +12,7 @@
         <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
         <div><strong>WINJECT</strong><span>WiFi Analyzer · ESP32U</span></div>
       </div>
-      <div class="status"><span id="status-dot"></span><span id="status-text">Connecting</span></div>
+      <form id="radio-connect"><label>ESP32 address <input id="radio-address" type="text" placeholder="192.168.1.225" required></label> <button type="submit">Connect</button></form><div class="status"><span id="status-dot"></span><span id="status-text">Connecting</span></div>
     </header>
 
     <aside class="rail" aria-label="Analyzer views">
@@ -51,7 +51,7 @@
       <section id="view-constellation" class="view active">
         <div class="section-heading"><div><p class="eyebrow">ESP32U · 2.4 GHz</p><h1>802.11</h1></div></div>
         <div class="analyzer-layout"><div class="capture-column">
-      <section id="capture-settings" class="device-strip panel"><h2>Capture settings</h2>
+      <section id="capture-settings" class="device-strip panel"><h2>Capture settings <button type="button" id="capture-toggle" aria-expanded="false" aria-controls="capture-settings">Show</button></h2>
         <label><span class="setting-name">Center</span><input id="freq" type="number" min="100" max="6000" value="2437"><span class="setting-unit">MHz</span></label>
         <label><span class="setting-name">Rate</span><select id="rate"><option value="16000000">16 MS/s</option><option value="40000000">40 MS/s</option><option value="80000000">80 MS/s</option></select></label>
         <label><span class="setting-name">Gain</span><select id="gain"><option value="agc">Hardware AGC</option><option value="manual">Manual</option></select><input id="gain-index" type="number" min="0" max="81" value="40" title="Manual gain index"></label>
@@ -89,7 +89,7 @@
 
       <section id="view-sweep" class="view">
         <div class="section-heading"><div><p class="eyebrow">ESP-SDR tuning range</p><h1>Spectrum sweep</h1></div></div>
-        <section class="panel sweep-controls"><h2>Capture settings</h2>
+        <section id="sweep-settings" class="panel sweep-controls"><h2>Capture settings <button type="button" id="sweep-settings-toggle" aria-expanded="false" aria-controls="sweep-settings">Show</button></h2>
           <label><span class="sweep-setting-name">Gain index</span><input id="sweep-gain" type="number" min="0" max="81" step="1" value="40"></label>
           <label><span class="sweep-setting-name">Bit depth</span><select id="sweep-bits"><option value="8">8 bit</option><option value="10">10 bit</option></select></label>
           <label><span class="sweep-setting-name">Peek BW</span><input id="sweep-bw" type="number" min="2" max="20" step="1" value="12"><span>MHz</span></label>
@@ -111,6 +111,6 @@
       </section>
     </main>
     <div id="toast" role="status"></div>
-    <script type="module" src="app.js?v=30"></script>
+    <script type="module" src="app.js?v=33"></script>
   </body>
 </html>
