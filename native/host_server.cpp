@@ -251,6 +251,9 @@ public:
  if(op=="radio.connect") {
   std::string ip=msg.at("address"); sockaddr_in target{};target.sin_family=AF_INET;target.sin_port=htons(mplane_port);
   if(inet_pton(AF_INET,ip.c_str(),&target.sin_addr)!=1 || target.sin_addr.s_addr==INADDR_ANY) throw std::runtime_error("Enter a valid IPv4 address");
+  // Leave the old analyzer idle: end a running sweep and stop its IQ stream, which would
+  // otherwise keep flooding the multicast group. It may already be unreachable.
+  {bool sweeping;{std::lock_guard<std::mutex> l(mu);sweeping=mode=="sweep";}if(sweeping)end_sweep("cancelled");try{request("iq_stop");}catch(const std::exception&){}}
   {std::lock_guard<std::mutex> control(control_mu);if(connect(ctl,(sockaddr*)&target,sizeof(target)))throw std::runtime_error("Could not connect control socket");}
   sockaddr_in local{};socklen_t len=sizeof(local);getsockname(ctl,(sockaddr*)&local,&len);ip_mreq membership{};inet_pton(AF_INET,"239.255.53.1",&membership.imr_multiaddr);membership.imr_interface=local.sin_addr;
   if(setsockopt(data,IPPROTO_IP,IP_ADD_MEMBERSHIP,&membership,sizeof(membership)) && errno!=EADDRINUSE) throw std::runtime_error("Could not join multicast on new interface");
