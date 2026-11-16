@@ -691,8 +691,11 @@ static void detect_signal(const std::vector<std::complex<float>>& raw, Candidate
     c.prepared = std::move(prepared);
 }
 
-std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
-                              const Candidate& c, int rate)
+// partial: the frame runs past the end of the capture. Decode the data symbols that are
+// there, skip the FCS, and return only the leading bytes the Viterbi decoder settled
+// (the last ~48 bits of an unterminated trellis are unreliable).
+static std::optional<Decoded> decode_impl(const std::vector<std::complex<float>>& raw,
+                                          const Candidate& c, int rate, bool partial)
 {
     if (rate != 40000000) return {};
     auto prepared = c.prepared ? c.prepared : prepare(raw, c, rate);
@@ -747,6 +750,12 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
         };
         int n = (16 + len * 8 + 6 + info->dbps - 1) / info->dbps;
         if (first + 128 + 80 * (n + 1) > int(z.size()))
+        {
+            if (!partial) continue;
+            n = (int(z.size()) - (first + 208)) / 80;  // captured data symbols
+            if (n < 1) continue;
+        }
+        else if (partial)
         {
             continue;
         }
@@ -832,7 +841,7 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
             }
         }
         auto bits = viterbi(mother, false);
-        if (bits.size() < size_t(16 + len * 8) || !descramble(bits) ||
+        if (bits.size() < size_t(16 + (partial ? 8 : len * 8)) || !descramble(bits) ||
             std::any_of(bits.begin(), bits.begin() + 16,
                         [](auto b)
                         {
@@ -841,23 +850,33 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
         {
             continue;
         }
-        std::vector<uint8_t> bytes(len);
-        for (int i = 0; i < len; i++)
+        const int nbytes = partial ? std::min(len, (int(bits.size()) - 16 - 48) / 8) : len;
+        if (nbytes < 1) continue;
+        std::vector<uint8_t> bytes(nbytes);
+        for (int i = 0; i < nbytes; i++)
         {
             for (int b = 0; b < 8; b++)
             {
                 bytes[i] |= bits[16 + i * 8 + b] << b;
             }
         }
-        uint32_t f = uint32_t(bytes[len - 4]) | uint32_t(bytes[len - 3]) << 8 |
-                     uint32_t(bytes[len - 2]) << 16 |
-                     uint32_t(bytes[len - 1]) << 24;
-        if (crc32(bytes.data(), len - 4) != f)
-        {
-            continue;
-        }
         Decoded out;
-        out.mpdu.assign(bytes.begin(), bytes.end() - 4);
+        if (partial)
+        {
+            out.mpdu = bytes;
+            out.partial = true;
+        }
+        else
+        {
+            uint32_t f = uint32_t(bytes[len - 4]) | uint32_t(bytes[len - 3]) << 8 |
+                         uint32_t(bytes[len - 2]) << 16 |
+                         uint32_t(bytes[len - 1]) << 24;
+            if (crc32(bytes.data(), len - 4) != f)
+            {
+                continue;
+            }
+            out.mpdu.assign(bytes.begin(), bytes.end() - 4);
+        }
         out.rate_mbps = info->rate;
         out.modulation = info->bpsc == 1   ? "BPSK"
                          : info->bpsc == 2 ? "QPSK"
@@ -909,6 +928,16 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
         return out;
     }
     return {};
+}
+std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
+                              const Candidate& c, int rate)
+{
+    return decode_impl(raw, c, rate, false);
+}
+std::optional<Decoded> decode_partial(const std::vector<std::complex<float>>& raw,
+                                      const Candidate& c, int rate)
+{
+    return decode_impl(raw, c, rate, true);
 }
 float ltf_snr_db(const Candidate& c)
 {

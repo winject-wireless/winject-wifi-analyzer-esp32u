@@ -104,7 +104,7 @@ assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[31,30]);assert.equa
 assert.equal(elem('#frames-resume').hidden,false);assert(elem('#frame-count').textContent.startsWith('View held'));
 key('ArrowUp');assert.equal(go('state.selectedFrame.capture_id'),31);assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[31,30]);
 elem('#frames-resume').onclick();
-assert.equal(go('state.selectedFrame'),null);assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[32,33,31,30]);assert.equal(elem('#frames-resume').hidden,true);
+assert.equal(go('state.selectedFrame'),null);assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[33,32,31,30]);assert.equal(elem('#frames-resume').hidden,true);
 go("selectFrame(state.frames[1])");elem('#return-live').onclick();assert.equal(go('state.frozenFrames'),null);
 console.log('mocked UI: selected frame holds the table, Resume live releases it');
 // A mouse press selects immediately (live re-renders can swallow the click); touch does not.
@@ -122,6 +122,13 @@ go('selectFrame(state.frames[0])');assert.equal(elem('#frame-captured').textCont
 go('selectFrame(state.frames[1])');assert.equal(elem('#frame-captured').textContent,'Complete');
 go("resumeLive();selectFrame({capture_id:52,start_sample:0,fcs_ok:true})");assert.equal(elem('#frame-captured').textContent,'Complete');go('resumeLive()');
 console.log('mocked UI: partial frames marked in table and details');
+// Partial frames with a decoded header match address filters and list newest first among verified frames.
+go("state.selectedFrame=null;state.frozenFrames=null;state.filters={addr1:'',addr2:'',addr3:''};state.verifiedFrames=[{capture_id:60,start_sample:5,fcs_ok:true,addr3:'ca:fe:ba:be:b0:0b'}];state.frames=[{capture_id:61,start_sample:9000,status:'partial',partial:true,fcs_ok:false,header_verified:false,addr3:'ca:fe:ba:be:b0:0b',partial_mpdu_hex:'08000000',signal_length_bytes:1434,captured_us:200,frame_duration_expected_us:500,captured_bytes_estimate:560},{capture_id:59,start_sample:1,status:'partial',partial:true}];renderFrames()");
+assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[61,60,59]);
+go("state.filters={addr1:'',addr2:'',addr3:'ca:fe:ba:be:b0:0b'};renderFrames()");assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[61,60]);
+go('selectFrame(state.frames[0])');assert.equal(elem('#frame-addr3').textContent,'ca:fe:ba:be:b0:0b (unverified)');assert.equal(elem('#frame-mpdu').textContent,'08000000');
+go("resumeLive();state.filters={addr1:'',addr2:'',addr3:''}");
+console.log('mocked UI: partial frames with decoded headers match filters, newest first');
 
 // Manually select the reference tone and reject frequencies near DC.
 go("state.status.mode='live';state.live={spectrum:{start_hz:2400000000,bin_hz:100000,db:Array(32).fill(-90)}};state.live.spectrum.db[16]=0;state.live.spectrum.db[17]=-1;state.live.spectrum.db[20]=-10;state.live.spectrum.db[23]=-20");

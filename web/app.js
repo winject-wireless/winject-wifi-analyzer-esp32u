@@ -467,7 +467,8 @@ $('#calibration-file').onchange=async e=>{ try { const c=JSON.parse(await e.targ
 $('#calibration-save').onclick=()=>{ if (!state.calibration) { toast('No calibration to save'); return; } const url=URL.createObjectURL(new Blob([JSON.stringify(state.calibration,null,2)],{type:'application/json'})), a=document.createElement('a'); a.href=url; a.download='winject-calibration.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); };
 
 function frameId(f) { return `${f.capture_id}:${f.start_sample}`; }
-function frameAddresses(f) { if (!f?.fcs_ok) return {}; return f.addresses && typeof f.addresses === 'object' ? f.addresses : {addr1: f.addr1, addr2: f.addr2, addr3: f.addr3}; }
+// Partial frames carry addresses decoded from the captured header (no FCS: unverified).
+function frameAddresses(f) { if (!f?.fcs_ok && f?.header_verified !== false) return {}; return f.addresses && typeof f.addresses === 'object' ? f.addresses : {addr1: f.addr1, addr2: f.addr2, addr3: f.addr3}; }
 function readable(v) { return v === null || v === undefined || v === '' ? 'Unavailable' : String(v); }
 function evmText(v) { return typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(2)} %` : 'Unavailable'; }
 function modulationRate(f) {
@@ -513,10 +514,11 @@ function visibleFrames() {
   if (state.selectedFrame && state.frozenFrames) return state.frozenFrames.filter(matchesFilters);
   return liveFrames();
 }
+// One time-ordered list, newest first: verified, partial and candidate rows interleaved.
 function liveFrames() {
-  const verifiedIds = new Set(state.verifiedFrames.map(frameId));
-  const all = [...state.verifiedFrames.slice().reverse(), ...state.frames.slice().reverse().filter(f => !verifiedIds.has(frameId(f)))];
-  return all.filter(matchesFilters);
+  const byId = new Map(state.frames.map(f => [frameId(f), f]));
+  for (const f of state.verifiedFrames) byId.set(frameId(f), f);
+  return [...byId.values()].sort((a, b) => (b.capture_id - a.capture_id) || (b.start_sample - a.start_sample)).filter(matchesFilters);
 }
 function selectFrame(f) {
   if (!state.selectedFrame || !state.frozenFrames) state.frozenFrames = liveFrames();
@@ -566,7 +568,7 @@ function decodeWinject(f) {
   return {domain: (bytes[20] << 8) | bytes[21], slots};
 }
 function renderMpdu(f, winject) {
-  const el = $('#frame-mpdu'), hex = f?.mpdu_hex;
+  const el = $('#frame-mpdu'), hex = f?.mpdu_hex || f?.partial_mpdu_hex;
   el.replaceChildren();
   if (!hex) { el.textContent = 'Not decoded'; return; }
   if (!winject) { el.textContent = hex; return; }
@@ -635,7 +637,8 @@ function renderFrames() {
   $('#frame-phy').textContent = f ? readable(f.phy) : '—';
   $('#frame-modulation').textContent = f ? modulationRate(f) : '—';
   $('#frame-captured').textContent = capturedText(f);
-  for (const key of ['addr1', 'addr2', 'addr3']) $(`#frame-${key}`).textContent = f ? readable(a[key]) : '—';
+  const unverified = f?.header_verified === false;
+  for (const key of ['addr1', 'addr2', 'addr3']) $(`#frame-${key}`).textContent = f ? readable(a[key]) + (unverified && a[key] ? ' (unverified)' : '') : '—';
   $('#frame-evm').textContent = f ? evmText(f.evm_percent) : 'Unavailable';
   $('#frame-status').textContent = f ? [f.reason || f.status || 'Preamble candidate; frame not decoded.', f.fcs_ok ? f.evm_warning : f.training_warning].filter(Boolean).join(' ') : 'Decoded frame fields appear when available.';
   const winject = decodeWinject(f);
