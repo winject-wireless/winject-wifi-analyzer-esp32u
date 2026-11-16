@@ -129,6 +129,13 @@ go("state.filters={addr1:'',addr2:'',addr3:'ca:fe:ba:be:b0:0b'};renderFrames()")
 go('selectFrame(state.frames[0])');assert.equal(elem('#frame-addr3').textContent,'ca:fe:ba:be:b0:0b (unverified)');assert.equal(elem('#frame-mpdu').textContent,'08000000');
 go("resumeLive();state.filters={addr1:'',addr2:'',addr3:''}");
 console.log('mocked UI: partial frames with decoded headers match filters, newest first');
+// A partial frame with decoded symbols shows its corrected data constellation, live and selected.
+go("state.selectedFrame=null;state.frozenFrames=null;state.liveCandidate=null;onFrames({frames:[{capture_id:70,start_sample:9000,status:'partial',partial:true,fcs_ok:false,header_verified:false,phy:'802.11 legacy OFDM',modulation:'16-QAM',rate_mbps:24,constellation:[[0.3,0.3],[-0.9,0.3],[0.9,-0.9]],training_evm_percent:3}]});renderConstellation()");
+assert.equal(go('state.liveCandidate.capture_id'),70);assert.equal(elem('#c-points').textContent,3);assert.equal(elem('#c-title').textContent,'Decoded data-field constellation (partial)');
+assert(elem('#c-description').textContent.includes('not FCS verified'));
+go("onFrames({frames:[{capture_id:71,start_sample:9000,status:'partial',partial:true,constellation:[[1,0]],training_evm_percent:3}]});selectFrame(state.frames.find(f=>f.capture_id===71));renderConstellation()");
+assert.notEqual(elem('#c-title').textContent,'Decoded data-field constellation (partial)');go('resumeLive()');
+console.log('mocked UI: partial frames show their corrected data constellation');
 
 // Manually select the reference tone and reject frequencies near DC.
 go("state.status.mode='live';state.live={spectrum:{start_hz:2400000000,bin_hz:100000,db:Array(32).fill(-90)}};state.live.spectrum.db[16]=0;state.live.spectrum.db[17]=-1;state.live.spectrum.db[20]=-10;state.live.spectrum.db[23]=-20");

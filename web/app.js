@@ -500,7 +500,7 @@ function onFrames(d) {
   state.frames = [...byId.values()].slice(-200);
   state.verifiedFrames = [...verified.values()].slice(-100);
   if (d?.history !== true) {
-    const usable = [...frames].reverse().find(f => f.fcs_ok === true && matchesFilters(f));
+    const usable = [...frames].reverse().find(f => hasDataSymbols(f) && matchesFilters(f));
     if (usable) { state.liveCandidate = usable; state.liveCandidateAt = performance.now(); }
   }
   if (state.selectedFrame) state.selectedFrame = verified.get(frameId(state.selectedFrame)) || byId.get(frameId(state.selectedFrame)) || state.selectedFrame;
@@ -588,10 +588,11 @@ function renderMpdu(f, winject) {
 // Partial frames run past the end of the capture: the host reports the SIGNAL length, the
 // expected airtime and how much of it the capture holds. They can never be FCS verified.
 function partialPercent(f) {
-  return f?.partial && f.frame_duration_expected_us > 0 ? Math.round(100 * f.captured_us / f.frame_duration_expected_us) : null;
+  return f?.partial && f.frame_duration_expected_us > 0 && Number.isFinite(f.captured_us) ? Math.round(100 * f.captured_us / f.frame_duration_expected_us) : null;
 }
 function resultText(f) {
-  return f.partial ? `Partial · ${partialPercent(f)} %` : (f.status || 'Candidate');
+  if (f.partial) { const pct = partialPercent(f); return pct === null ? 'Partial' : `Partial · ${pct} %`; }
+  return f.status || 'Candidate';
 }
 function frameSizeText(f) {
   if (f.partial && Number.isFinite(f.signal_length_bytes)) return `~${f.captured_bytes_estimate ?? 0} of ${f.signal_length_bytes} B`;
@@ -599,7 +600,11 @@ function frameSizeText(f) {
 }
 function capturedText(f) {
   if (!f) return '—';
-  if (f.partial) return `Partial · ~${f.captured_bytes_estimate ?? 0} of ${f.signal_length_bytes} B · ${f.captured_us.toFixed(0)} of ${f.frame_duration_expected_us.toFixed(0)} µs`;
+  if (f.partial) {
+    const bytes = Number.isFinite(f.signal_length_bytes) ? `~${f.captured_bytes_estimate ?? 0} of ${f.signal_length_bytes} B` : null;
+    const time = Number.isFinite(f.captured_us) && Number.isFinite(f.frame_duration_expected_us) ? `${f.captured_us.toFixed(0)} of ${f.frame_duration_expected_us.toFixed(0)} µs` : null;
+    return ['Partial', bytes, time].filter(Boolean).join(' · ');
+  }
   if (f.partial === false || f.fcs_ok) return 'Complete';
   return 'Unavailable';
 }
@@ -679,17 +684,20 @@ function drawTraining(src) {
   x.fillStyle = '#36e5d2aa';
   for (const p of points) if (Number.isFinite(p[0]) && Number.isFinite(p[1])) { x.beginPath(); x.arc(plot.cx+p[0]*plot.scale,plot.cy-p[1]*plot.scale,2,0,7); x.fill(); }
 }
+// Pilot-corrected data symbols exist for verified frames and for partial frames whose
+// captured symbols were decoded (pilots are in every symbol; only the FCS is missing).
+function hasDataSymbols(f) { return !!f && (f.fcs_ok === true || (f.partial === true && f.header_verified === false)); }
 function renderConstellation() {
   const isFrame = state.points === 'frame', snapshot = state.points === 'snapshot';
   const corrected = state.points === 'corrected' || isFrame;
   const candidate = displayedCandidate();
   const liveFresh = state.status?.mode === 'live' && ws?.readyState === WebSocket.OPEN && performance.now() - state.liveAt < 3000;
   const src = corrected ? candidate : snapshot ? state.snapshot : liveFresh ? state.live : null;
-  const pts = corrected ? (src?.fcs_ok ? src?.constellation : []) : src?.points;
+  const pts = corrected ? (hasDataSymbols(src) ? src.constellation : []) : src?.points;
   const valid = Array.isArray(pts) ? pts.filter(p => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1])) : [];
   $('#data-empty').hidden = valid.length > 0;
   $('#data-empty').textContent = src ? 'Decoded data symbols unavailable for this frame' : 'Waiting for decoded data symbols';
-  const showPayload = corrected && !!src?.fcs_ok && valid.length > 0;
+  const showPayload = corrected && hasDataSymbols(src) && valid.length > 0, partialPayload = showPayload && !src.fcs_ok;
   const trainingEvm = corrected && !showPayload && valid.length > 0 && Number.isFinite(src?.training_evm_percent);
   const {x, w, h} = canvas('#constellation-canvas'); x.clearRect(0, 0, w, h); const plot = constellationGrid(x, w, h);
   if (valid.length) {
@@ -704,10 +712,10 @@ function renderConstellation() {
   rawCanvas.x.fillStyle = '#46a4ff99';
   for (const [i, q] of raw) { rawCanvas.x.beginPath(); rawCanvas.x.arc(rawPlot.cx + i * rawPlot.scale, rawPlot.cy - q * rawPlot.scale, 1.8, 0, 7); rawCanvas.x.fill(); }
   $('#c-kind').textContent = isFrame ? 'SELECTED FRAME' : corrected ? (src ? `LIVE FRAME · CAPTURE ${src.capture_id}` : 'LIVE · WAITING FOR COMPLETE FRAME') : snapshot ? `SNAPSHOT #${src?.capture_id ?? '—'}` : 'LIVE RAW IQ';
-  $('#c-title').textContent = showPayload ? 'Decoded data-field constellation' : corrected ? 'Corrected constellation' : snapshot ? 'Frozen raw IQ' : 'Raw baseband IQ';
+  $('#c-title').textContent = partialPayload ? 'Decoded data-field constellation (partial)' : showPayload ? 'Decoded data-field constellation' : corrected ? 'Corrected constellation' : snapshot ? 'Frozen raw IQ' : 'Raw baseband IQ';
   const trainingName = src?.training_kind || (/ofdm/i.test(src?.phy || '') || /ofdm/i.test(src?.detection || '') ? 'L-LTF' : 'Training');
   const phyText = [src?.phy, modulationRate(src)].filter(x => x && x !== 'Unavailable').join(' · ');
-  $('#c-description').textContent = showPayload ? `Corrected data symbols for an FCS-verified${phyText ? ` ${phyText}` : ''} frame.` : corrected ? (valid.length ? `Estimated equalized ${trainingName} training symbols for an unverified preamble candidate. These are not decoded payload symbols.` : 'No current corrected constellation is available. Waiting for a usable candidate.') : src ? 'Samples are shown before frame synchronization or equalization. They are not demodulated symbols.' : 'No current raw IQ burst is available.';
+  $('#c-description').textContent = partialPayload ? `Corrected data symbols captured before the end of the capture for a partial${phyText ? ` ${phyText}` : ''} frame; not FCS verified.` : showPayload ? `Corrected data symbols for an FCS-verified${phyText ? ` ${phyText}` : ''} frame.` : corrected ? (valid.length ? `Estimated equalized ${trainingName} training symbols for an unverified preamble candidate. These are not decoded payload symbols.` : 'No current corrected constellation is available. Waiting for a usable candidate.') : src ? 'Samples are shown before frame synchronization or equalization. They are not demodulated symbols.' : 'No current raw IQ burst is available.';
   $('#c-points').textContent = valid.length || '—';
   $('#c-freq').textContent = src?.frequency_hz ? mhz(src.frequency_hz) : '—';
   $('#c-rate').textContent = src?.sample_rate_hz ? `${src.sample_rate_hz / 1e6} MS/s` : '—';
