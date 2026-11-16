@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Winject WiFi Analyzer</title>
-    <link rel="stylesheet" href="style.css?v=14">
+    <link rel="stylesheet" href="style.css?v=16">
   </head>
   <body>
     <header class="topbar">
@@ -73,7 +73,7 @@
           <article class="panel plot-panel data-plot raw-training-panel"><div class="panel-title"><h2 title="Channel-equalized L-LTF subcarriers; L-LTF has no pilots">Raw training IQ</h2></div><canvas id="training-canvas"></canvas><p id="training-empty" class="plot-empty">Waiting for frame samples</p><div class="axis x">In-phase (I)</div><div class="axis y">Quadrature (Q)</div></article>
           <article class="panel channel-panel response-panel"><div class="panel-title"><h2>Channel response</h2></div><span id="response-meta">Waiting for a frame</span><canvas id="response-canvas" aria-label="Channel response"></canvas><div class="spectrum-scale"><span>−26 subcarriers</span><span>0</span><span>+26 subcarriers</span></div><p class="channel-note">Relative channel magnitude; gain is not calibrated.</p></article>
           <article class="panel channel-panel waveform-panel"><div class="plot-tabs segmented"><button class="active" data-frame-plot="fft">FFT</button><button data-frame-plot="envelope">Frame envelope</button></div><span id="channel-meta">Waiting for a frame</span><canvas id="channel-canvas" aria-label="Selected frame waveform"></canvas><div id="plot-scale" class="spectrum-scale"></div><p id="channel-note" class="channel-note"></p></article></div>
-          <article class="panel frames-panel"><div class="frames-heading"><div><h2>Captured frames</h2><p id="detector-status">Starting detector…</p></div><span id="frame-count" class="frame-count">0</span></div>
+          <article class="panel frames-panel"><div class="frames-heading"><div><h2>Captured frames</h2><p id="detector-status">Starting detector…</p></div><span id="frame-count" class="frame-count">0</span><button id="frames-resume" class="secondary" hidden>Resume live</button></div>
           <div class="frame-filters"><label class="check"><input id="filter-fcs" type="checkbox"> Validated FCS only</label><label>Address 1<input id="filter-addr1" placeholder="Any"></label><label>Address 2<input id="filter-addr2" placeholder="Any"></label><label>Address 3<input id="filter-addr3" placeholder="Any"></label><button id="clear-filters" class="secondary">Clear filters</button><span id="filter-error" role="status"></span></div>
           <div id="frames-scroll" class="table-scroll" tabindex="0" aria-label="Captured frames; use up and down arrows to select"><table><thead><tr><th>Capture.Sample</th><th>PHY</th><th>Modulation / rate</th><th>Data EVM</th><th>Average power</th><th>SNR</th><th>SNR (LTF)</th><th>Noise floor</th><th>Clipped</th><th>Address 3</th><th>Result</th><th>Frame size</th></tr></thead><tbody id="frames-body"></tbody></table><div id="frames-empty" class="empty">Listening for candidates…</div></div></article></div>
           <div hidden><span id="c-title"></span><span id="c-description"></span><span id="c-points"></span><span id="c-freq"></span><span id="c-rate"></span><span id="c-evm-label"></span><span id="c-evm"></span><span id="c-evm-note"></span><button id="snapshot"></button><a id="download"></a></div>
@@ -111,6 +111,6 @@
       </section>
     </main>
     <div id="toast" role="status"></div>
-    <script type="module" src="app.js?v=28"></script>
+    <script type="module" src="app.js?v=29"></script>
   </body>
 </html>

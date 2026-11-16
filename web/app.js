@@ -502,12 +502,23 @@ function onFrames(d) {
   renderFrames();
   renderConstellation(); renderChannelResponse();
 }
+// Selecting a frame holds the view: the table keeps the rows it showed at that moment
+// while capture continues and new frames are collected underneath. Clearing the
+// selection (Resume live) returns to the live list.
 function visibleFrames() {
+  if (state.selectedFrame && state.frozenFrames) return state.frozenFrames.filter(matchesFilters);
+  return liveFrames();
+}
+function liveFrames() {
   const verifiedIds = new Set(state.verifiedFrames.map(frameId));
   const all = [...state.verifiedFrames.slice().reverse(), ...state.frames.slice().reverse().filter(f => !verifiedIds.has(frameId(f)))];
   return all.filter(matchesFilters);
 }
-function selectFrame(f) { state.selectedFrame = f; selectPoints('frame'); renderFrames(); }
+function selectFrame(f) {
+  if (!state.selectedFrame || !state.frozenFrames) state.frozenFrames = liveFrames();
+  state.selectedFrame = f; selectPoints('frame'); renderFrames();
+}
+function resumeLive() { state.selectedFrame = null; state.frozenFrames = null; selectPoints('corrected'); renderFrames(); }
 function frameCalibrationOffset(frame) {
   if (!frame?.calibration_settings || !Number.isFinite(frame.frequency_hz)) return null;
   const offsets = calibrationOffsets(frame.calibration_settings);
@@ -579,7 +590,9 @@ function frameRowValues(f) {
 function renderFrames() {
   const list = visibleFrames();
   const allCount = state.frames.length + state.verifiedFrames.length;
-  $('#frame-count').textContent = `${state.verifiedFrames.length} FCS verified · ${list.length} shown`;
+  const held = !!(state.selectedFrame && state.frozenFrames);
+  $('#frame-count').textContent = held ? `View held · ${list.length} shown · capture continues` : `${state.verifiedFrames.length} FCS verified · ${list.length} shown`;
+  $('#frames-resume').hidden = !held;
   const body = $('#frames-body'); body.replaceChildren();
   for (const f of list) {
     const tr = document.createElement('tr');
@@ -899,7 +912,8 @@ $('#frames-scroll').addEventListener('keydown', e => {
   selectFrame(list[next]);
   $('#frames-body').children[next]?.scrollIntoView({block: 'nearest'});
 });
-$('#return-live').onclick = () => { state.selectedFrame = null; selectPoints('corrected'); renderFrames(); };
+$('#return-live').onclick = resumeLive;
+$('#frames-resume').onclick = resumeLive;
 $('#run').onclick = () => send({op: 'live', on: state.status?.mode !== 'live'});
 $('#snapshot').onclick = () => send({op: 'snapshot'});
 for (const key of ['addr1', 'addr2', 'addr3']) {

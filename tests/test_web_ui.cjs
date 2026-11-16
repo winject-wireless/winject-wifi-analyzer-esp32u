@@ -95,6 +95,19 @@ key('ArrowUp');assert.equal(go('state.selectedFrame.capture_id'),21);
 assert(fs.readFileSync('web/index.html','utf8').includes('id="frame-gain"'));
 console.log('mocked UI: frame gain and arrow navigation passed');
 
+// Selecting a frame holds the table while capture continues; Resume live releases it.
+go("state.selectedFrame=null;state.frozenFrames=null;state.frames=[{capture_id:30,start_sample:0},{capture_id:31,start_sample:0}];renderFrames()");
+assert.equal(go('visibleFrames().length'),2);assert.equal(elem('#frames-resume').hidden,true);
+go("selectFrame(state.frames[0])");
+go("onFrames({frames:[{capture_id:32,start_sample:0,fcs_ok:true},{capture_id:33,start_sample:0}]})");
+assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[31,30]);assert.equal(go('state.selectedFrame.capture_id'),30);
+assert.equal(elem('#frames-resume').hidden,false);assert(elem('#frame-count').textContent.startsWith('View held'));
+key('ArrowUp');assert.equal(go('state.selectedFrame.capture_id'),31);assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[31,30]);
+elem('#frames-resume').onclick();
+assert.equal(go('state.selectedFrame'),null);assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[32,33,31,30]);assert.equal(elem('#frames-resume').hidden,true);
+go("selectFrame(state.frames[1])");elem('#return-live').onclick();assert.equal(go('state.frozenFrames'),null);
+console.log('mocked UI: selected frame holds the table, Resume live releases it');
+
 // Manually select the reference tone and reject frequencies near DC.
 go("state.status.mode='live';state.live={spectrum:{start_hz:2400000000,bin_hz:100000,db:Array(32).fill(-90)}};state.live.spectrum.db[16]=0;state.live.spectrum.db[17]=-1;state.live.spectrum.db[20]=-10;state.live.spectrum.db[23]=-20");
 elem('#calibration-auto').onclick();assert.equal(elem('#calibration-auto-frequency').value,'');
