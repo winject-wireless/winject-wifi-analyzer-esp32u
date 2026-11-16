@@ -11,7 +11,7 @@ def control():
   elif cmd.startswith('iq_capture'):
    state.update(mode='capture',calibration='count=9' in cmd,job_id=state['job_id']+1,capture_count=0);result=f"capture id={state['job_id']}"
   elif cmd.startswith('iq_sweep'):state.update(mode='sweep',job=11,sweep_command=cmd);result='sweep id=11'
-  elif cmd.startswith('iq_stop'):state['mode']='idle';result='stop'
+  elif cmd.startswith('iq_stop'):state['mode']='idle';state['stops']=state.get('stops',0)+1;result='stop'
   elif cmd.startswith('iq_set gain='):state['gain']=int(cmd.split()[1].split('=')[1]);result='set'
   else:result='set'
   s.sendto(('OK:'+rid+' '+result+'\n').encode(),a)
@@ -91,6 +91,21 @@ async def run():
    assert any(f.get('mpdu_hex')==expected and f.get('fcs_ok') for f in second['data']['frames'])
   print('DSSS FCS-verified frame and reconnect history ok');state['fixture']=None
   await ws.send(json.dumps({'op':'sweep','start_mhz':2410,'stop_mhz':2410,'step_mhz':5,'rate_hz':16000000,'fft':512,'dwell_ms':25}));print('sweep.start',await event('sweep.start'));tile=await event('sweep.tile');assert tile['index']==0 and tile['bins'] and tile['calibration_settings']['gain']==20;assert 'dwell_ms=25' in state['sweep_command'];print('sweep.tile',len(tile['bins']));print('sweep.done',await event('sweep.done'))
+  # Switching analyzer: a bad address is refused; a good one stops the old IQ stream and resumes live.
+  await ws.send(json.dumps({'op':'radio.connect','address':'999.1.1.1'}))
+  while True:
+   d=json.loads(await asyncio.wait_for(ws.recv(),5))
+   if d['event']=='error':assert 'valid IPv4' in d['data']['message'];break
+  while state['mode']!='capture':await asyncio.sleep(.1)
+  stops=state.get('stops',0)
+  await ws.send(json.dumps({'op':'radio.connect','address':'127.0.0.1'}))
+  for _ in range(50):
+   if state.get('stops',0)>stops:break
+   await asyncio.sleep(.1)
+  else:raise AssertionError('old analyzer IQ stream not stopped')
+  st=await event('status');assert st['radio_ip']=='127.0.0.1'
+  live=await event('live');assert live['samples']==1024
+  print('radio.connect: invalid address refused, old stream stopped, live resumed')
 try:asyncio.run(run())
 finally:
  stop.set();p.terminate();p.wait(timeout=5);print('server log',p.stderr.read().decode()[-1000:])

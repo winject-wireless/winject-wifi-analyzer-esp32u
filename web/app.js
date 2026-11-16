@@ -104,9 +104,13 @@ function handle(m) {
   }
 }
 
+let radioAddressDirty = false;
+$("#radio-address").addEventListener("input", () => { radioAddressDirty = true; });
 function applyStatus(s) {
   const first = !state.status;
   state.status = s;
+  if (radioAddressDirty && s.radio_ip === $("#radio-address").value.trim() && document.activeElement !== $("#radio-address")) radioAddressDirty = false;
+  if (!radioAddressDirty && document.activeElement !== $("#radio-address")) $("#radio-address").value = s.radio_ip || "";
   const r = s.radio || {};
   setStatus(!r.error, r.error ? `Radio: ${r.error}` : `ESP32U ${s.radio_ip} · ${s.mode}`);
   $('#rate-metric').textContent = `${s.captures_per_s}/s`;
@@ -974,3 +978,9 @@ restorePreferences();
 renderSweepRadioSettings();
 loadCalibration();
 connect();
+
+$('#radio-connect').addEventListener('submit', e => { e.preventDefault(); if (ws?.readyState !== 1) { toast('Host connection unavailable'); return; } send({op:'radio.connect', address:$('#radio-address').value.trim()}); toast('Connecting to analyzer'); });
+
+$('#capture-toggle').addEventListener('click', () => { const settings = $('#capture-settings'); const expanded = settings.classList.toggle('mobile-expanded'); $('#capture-toggle').setAttribute('aria-expanded', String(expanded)); $('#capture-toggle').textContent = expanded ? 'Hide' : 'Show'; });
+
+$('#sweep-settings-toggle').addEventListener('click', () => { const settings = $('#sweep-settings'); const expanded = settings.classList.toggle('mobile-expanded'); $('#sweep-settings-toggle').setAttribute('aria-expanded', String(expanded)); $('#sweep-settings-toggle').textContent = expanded ? 'Hide' : 'Show'; });
