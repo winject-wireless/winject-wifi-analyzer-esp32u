@@ -600,6 +600,7 @@ function renderFrames() {
     for (const value of frameRowValues(f)) {
       const td = document.createElement('td'); td.textContent = String(value); tr.appendChild(td);
     }
+    tr.frame = f;
     tr.onclick = () => { $('#frames-scroll').focus(); selectFrame(f); };
     body.appendChild(tr);
   }
@@ -911,6 +912,15 @@ $('#frames-scroll').addEventListener('keydown', e => {
   const next = index < 0 ? 0 : Math.max(0, Math.min(list.length - 1, index + (e.key === 'ArrowDown' ? 1 : -1)));
   selectFrame(list[next]);
   $('#frames-body').children[next]?.scrollIntoView({block: 'nearest'});
+});
+// The table re-renders several times a second while live, so a row can be replaced
+// between mouse press and release and the click never fires. Select on the press
+// for a mouse; touch keeps the click so starting a scroll does not select a frame.
+$('#frames-body').addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'mouse' || e.button !== 0) return;
+  const tr = e.target?.closest?.('tr');
+  if (!tr?.frame) return;
+  $('#frames-scroll').focus(); selectFrame(tr.frame);
 });
 $('#return-live').onclick = resumeLive;
 $('#frames-resume').onclick = resumeLive;

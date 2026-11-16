@@ -107,6 +107,13 @@ elem('#frames-resume').onclick();
 assert.equal(go('state.selectedFrame'),null);assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[32,33,31,30]);assert.equal(elem('#frames-resume').hidden,true);
 go("selectFrame(state.frames[1])");elem('#return-live').onclick();assert.equal(go('state.frozenFrames'),null);
 console.log('mocked UI: selected frame holds the table, Resume live releases it');
+// A mouse press selects immediately (live re-renders can swallow the click); touch does not.
+go("state.selectedFrame=null;state.frozenFrames=null;state.frames=[{capture_id:40,start_sample:0},{capture_id:41,start_sample:0}];renderFrames()");
+const press=(type,f)=>handlers['#frames-body:pointerdown']({pointerType:type,button:0,target:{closest:()=>({frame:f})}});
+press('touch',go('state.frames[0]'));assert.equal(go('state.selectedFrame'),null);
+press('mouse',go('state.frames[0]'));assert.equal(go('state.selectedFrame.capture_id'),40);assert.equal(elem('#frames-resume').hidden,false);
+go("resumeLive()");
+console.log('mocked UI: mouse press selects a frame before the live table re-renders');
 
 // Manually select the reference tone and reject frequencies near DC.
 go("state.status.mode='live';state.live={spectrum:{start_hz:2400000000,bin_hz:100000,db:Array(32).fill(-90)}};state.live.spectrum.db[16]=0;state.live.spectrum.db[17]=-1;state.live.spectrum.db[20]=-10;state.live.spectrum.db[23]=-20");
