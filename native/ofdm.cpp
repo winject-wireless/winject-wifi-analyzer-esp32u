@@ -450,17 +450,28 @@ static std::shared_ptr<PreparedSignal> prepare(const std::vector<std::complex<fl
         return {};
     }
     auto prepared = std::make_shared<PreparedSignal>();
+    // The receiver's DC offset (often well above the noise floor) must go before the
+    // CFO de-rotation: rotated, it becomes a tone whose phase differs between the two
+    // L-LTF symbols, so it reads as noise on the subcarriers next to DC and biases the
+    // coarse CFO toward zero. Legacy OFDM carries nothing at DC, so the capture mean is
+    // the offset.
+    C dc = 0;
+    for (auto v : raw)
+    {
+        dc += C(v);
+    }
+    dc /= double(raw.size());
     C corr = 0;
     for (int i = 0; i < 224; i++)
     {
-        corr += std::conj(C(raw[c.start_sample + i])) *
-                C(raw[c.start_sample + i + 32]);
+        corr += std::conj(C(raw[c.start_sample + i]) - dc) *
+                (C(raw[c.start_sample + i + 32]) - dc);
     }
     double coarse = std::arg(corr) / 32;
     std::vector<C> x(raw.size());
     for (size_t i = 0; i < raw.size(); i++)
     {
-        x[i] = C(raw[i]) * std::polar(1.0, -coarse * i);
+        x[i] = (C(raw[i]) - dc) * std::polar(1.0, -coarse * i);
     }
     std::array<C, 64> lt{};
     for (int k = -26; k <= 26; k++)
