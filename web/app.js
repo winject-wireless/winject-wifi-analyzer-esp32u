@@ -749,11 +749,15 @@ function renderFrameWaveform(frame) {
   const {x,w,h} = canvas('#channel-canvas'); x.clearRect(0,0,w,h); grid(x,w,h);
   const offset = frameCalibrationOffset(frame);
   $('#channel-note').textContent = fft ? (Number.isFinite(offset) ? `Mean spectral power per FFT bin · dBm estimated using center-frequency calibration and capture-start gain.${frame?.agc ? ' AGC may change during the frame.' : ''}${frame?.frame_clipped ? ' Samples clipped.' : ''}` : 'Mean spectral power per FFT bin · dBFS. dBm requires matching calibration.') : Number.isFinite(offset) ? `Peak power per time bucket; dBm is estimated using capture-start gain.${frame?.agc ? ' AGC may change during the frame.' : ''}${frame?.frame_clipped ? ' Samples clipped.' : ''}` : 'Peak power per time bucket · dBFS. dBm requires matching calibration.';
-  $('#plot-scale').textContent = fft ? `−${(frame?.sample_rate_hz || 0)/2e6} MHz                                +${(frame?.sample_rate_hz || 0)/2e6} MHz` : `0 µs                                ${frame?.frame_duration_us ?? '—'} µs`;
-  if (!Array.isArray(values) || values.length < 2) { $('#channel-meta').textContent = 'Complete frame waveform unavailable'; return; }
+  const duration = Number.isFinite(frame?.frame_duration_us) ? `${frame.frame_duration_us.toFixed(0)} µs` : '—';
+  $('#plot-scale').textContent = fft ? `−${(frame?.sample_rate_hz || 0)/2e6} MHz                                +${(frame?.sample_rate_hz || 0)/2e6} MHz` : `0 µs                                ${duration}`;
+  if (!Array.isArray(values) || values.length < 2) { $('#channel-meta').textContent = 'Frame waveform unavailable'; return; }
   const min = Math.floor(Math.min(...values)/10)*10, max = Math.max(min+10, Math.ceil(Math.max(...values)/10)*10);
   trace(x, values.map((_,i)=>i), values, i=>i/(values.length-1)*w, v=>h-(v-min)/(max-min)*h, h, '#36e5d2'); spectrumAxisLabels(x,w,h,min,max,offset);
-  $('#channel-meta').textContent = `Capture ${frame.capture_id} · ${frame.frame_duration_us} µs`;
+  // Every detected frame has a waveform: the whole frame, the captured part of a partial one,
+  // or only the preamble when SIGNAL did not decode.
+  const scope = {'captured part': ' · captured part (partial frame)', preamble: ' · preamble only (SIGNAL not decoded)'}[frame.waveform_scope] || '';
+  $('#channel-meta').textContent = `Capture ${frame.capture_id} · ${duration}${scope}`;
 }
 function selectPoints(which) { state.points = which; $$('[data-points]').forEach((b) => b.classList.toggle('active', b.dataset.points === which)); renderConstellation(); renderChannelResponse(); }
 

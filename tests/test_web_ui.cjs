@@ -143,6 +143,13 @@ elem('#filter-complete').checked=true;handlers['#filter-complete:change']();asse
 assert.equal(go('state.completeOnly'),true);
 elem('#clear-filters').onclick();assert.equal(go('state.completeOnly'),false);assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[81,80,79]);
 console.log('mocked UI: complete-frames-only filter');
+// Every detected frame gets an FFT; the caption says which window it covers.
+go("state.framePlot='fft';renderFrameWaveform({capture_id:90,sample_rate_hz:40000000,frame_duration_us:182.4,waveform_scope:'captured part',frame_spectrum_db:[-50,-40,-45]})");
+assert.equal(elem('#channel-meta').textContent,'Capture 90 · 182 µs · captured part (partial frame)');
+go("renderFrameWaveform({capture_id:91,sample_rate_hz:40000000,frame_duration_us:20,waveform_scope:'preamble',frame_spectrum_db:[-50,-40]})");
+assert.equal(elem('#channel-meta').textContent,'Capture 91 · 20 µs · preamble only (SIGNAL not decoded)');
+go("renderFrameWaveform({capture_id:92,sample_rate_hz:40000000})");assert.equal(elem('#channel-meta').textContent,'Frame waveform unavailable');
+console.log('mocked UI: FFT for every detected frame with its window');
 
 // Manually select the reference tone and reject frequencies near DC.
 go("state.status.mode='live';state.live={spectrum:{start_hz:2400000000,bin_hz:100000,db:Array(32).fill(-90)}};state.live.spectrum.db[16]=0;state.live.spectrum.db[17]=-1;state.live.spectrum.db[20]=-10;state.live.spectrum.db[23]=-20");

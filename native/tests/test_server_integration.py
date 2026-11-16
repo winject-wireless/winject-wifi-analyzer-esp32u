@@ -72,6 +72,7 @@ async def run():
   assert header['signal_length_bytes']==len(payload['mpdu_hex'])//2+4 and header['signal_modulation']=='16-QAM'
   assert not header.get('fcs_ok',False) and payload['fcs_ok']
   assert header['partial'] is False and header['frame_duration_expected_us']>20 and header['captured_us']==header['frame_duration_expected_us']
+  assert len(header['frame_spectrum_db'])==512 and header['waveform_scope']=='frame' and header['frame_envelope_db']
   assert math.isfinite(header['frame_mean_dbfs']) and math.isfinite(header['frame_peak_dbfs']) and isinstance(header['frame_clipped'],bool) and header['ltf_snr_db'] is not None
   assert payload['constellation'] and payload['training_constellation'] and payload['channel_estimate']
   assert payload['raw_training_iq'] and payload['raw_data_iq']
@@ -87,6 +88,7 @@ async def run():
    if good:break
   expected=open('tests/fixtures/libcrafter/dsss-110-short-clean-48.mpdu','rb').read()[:-4].hex()
   assert good[0]['mpdu_hex']==expected and 0<=good[0]['start_sample']<5392
+  assert len(good[0]['frame_spectrum_db'])==512 and good[0]['waveform_scope'] in ('frame','captured part')
   async with websockets.connect('ws://127.0.0.1:58082/ws') as ws2:
    first=json.loads(await asyncio.wait_for(ws2.recv(),5)); second=json.loads(await asyncio.wait_for(ws2.recv(),5))
    assert first['event']=='status' and second['event']=='frames' and second['data']['history']
