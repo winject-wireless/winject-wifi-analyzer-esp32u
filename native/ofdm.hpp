@@ -34,6 +34,9 @@ struct Decoded
     int ltf_start_sample = 0, frame_end_sample = 0;
     float evm_percent = 0, clipped_fraction = 0, ltf_match = 0;
     bool evm_valid = false;
+    // decode_partial: mpdu holds only the leading bytes of a frame cut off by the end
+    // of the capture; no FCS, so nothing in it is verified.
+    bool partial = false;
     // SNR from the two identical L-LTF symbols (NaN when not measurable).
     float ltf_snr_db = std::numeric_limits<float>::quiet_NaN();
 };
@@ -44,5 +47,7 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>&,
 // L-LTF SNR of a candidate whose SIGNAL decoded (it does not need the rest of the
 // frame, so it also works for frames cut off by the end of the capture).
 float ltf_snr_db(const Candidate&);
+std::optional<Decoded> decode_partial(const std::vector<std::complex<float>>&,
+                                      const Candidate&, int sample_rate_hz);
 const char* simd_backend();
 }  // namespace winject::ofdm

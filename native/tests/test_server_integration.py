@@ -54,7 +54,7 @@ async def run():
     data=json.loads(await asyncio.wait_for(ws.recv(),5))
     if data['event']=='error':raise RuntimeError(str(data))
     if data['event']==name:return data['data']
-  st=await event('status');assert st['mode']=='live';print('status',st['decoder_formats'],st['decoder_backend'])
+  st=await event('status');assert st['mode']=='live' and 'decoder_partial' in st and st['client_dropped']==0;print('status',st['decoder_formats'],st['decoder_backend'])
   data=await event('live');assert data['samples']==1024 and len(data['spectrum']['db'])==1024;print('live',data['capture_id'],data['samples'])
   await ws.send(json.dumps({'op':'calibration.start','power_dbm':-60,'tone_hz':2410000000+79*40000000/1024,'start_gain':1,'end_gain':2})); done=await event('calibration.done');assert not done['error'] and len(done['points'])==2 and [p['settings']['gain'] for p in done['points']]==[1,2],done;assert all(p['measurements']==9 and p['inliers']==7 and abs(p['measured_dbfs']-20*math.log10(24*4/511))<.2 for p in done['points']),done;print('calibration rejects clipping and outliers; restores live')
   await ws.send(json.dumps({'op':'snapshot'}));snap=await event('snapshot');assert snap['samples']==1024
@@ -72,6 +72,7 @@ async def run():
   assert header['signal_length_bytes']==len(payload['mpdu_hex'])//2+4 and header['signal_modulation']=='16-QAM'
   assert not header.get('fcs_ok',False) and payload['fcs_ok']
   assert header['partial'] is False and header['frame_duration_expected_us']>20 and header['captured_us']==header['frame_duration_expected_us']
+  assert len(header['frame_spectrum_db'])==512 and header['waveform_scope']=='frame' and header['frame_envelope_db']
   assert math.isfinite(header['frame_mean_dbfs']) and math.isfinite(header['frame_peak_dbfs']) and isinstance(header['frame_clipped'],bool) and header['ltf_snr_db'] is not None
   assert payload['constellation'] and payload['training_constellation'] and payload['channel_estimate']
   assert payload['raw_training_iq'] and payload['raw_data_iq']
@@ -87,6 +88,7 @@ async def run():
    if good:break
   expected=open('tests/fixtures/libcrafter/dsss-110-short-clean-48.mpdu','rb').read()[:-4].hex()
   assert good[0]['mpdu_hex']==expected and 0<=good[0]['start_sample']<5392
+  assert len(good[0]['frame_spectrum_db'])==512 and good[0]['waveform_scope'] in ('frame','captured part')
   async with websockets.connect('ws://127.0.0.1:58082/ws') as ws2:
    first=json.loads(await asyncio.wait_for(ws2.recv(),5)); second=json.loads(await asyncio.wait_for(ws2.recv(),5))
    assert first['event']=='status' and second['event']=='frames' and second['data']['history']

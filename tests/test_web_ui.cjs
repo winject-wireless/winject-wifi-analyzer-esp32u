@@ -60,9 +60,9 @@ ctx.localStorage = {getItem(){return savedPreferences}, setItem(_key,value){save
 go('restorePreferences()');
 assert(navs[1].active && detectors[1].active && plots[1].active);
 assert.equal(go('state.framePlot'), 'fft');
-assert.equal(go('state.filters.addr1'), 'aa:bb:cc:dd:ee:ff');
-assert.equal(elem('#filter-addr2').value, 'partial');
-assert(elem('#filter-error').textContent.includes('six hexadecimal octets'));
+assert.equal(go('state.filters.addr1'), 'AA-BB-CC-DD-EE-FF');assert(go("matchesFilters({fcs_ok:true,addr1:'aa:bb:cc:dd:ee:ff',addr2:'00:00:00:00:00:00'})")===false);
+assert.equal(elem('#filter-addr2').value, 'partial');assert.equal(go('state.filters.addr2'), 'partial');
+assert.equal(elem('#filter-error').textContent, '');
 assert.equal(elem('#filter-fcs').checked, true);
 go('savePreferences()');
 assert.equal(JSON.parse(savedPreferences).view, 'live');
@@ -104,7 +104,7 @@ assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[31,30]);assert.equa
 assert.equal(elem('#frames-resume').hidden,false);assert(elem('#frame-count').textContent.startsWith('View held'));
 key('ArrowUp');assert.equal(go('state.selectedFrame.capture_id'),31);assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[31,30]);
 elem('#frames-resume').onclick();
-assert.equal(go('state.selectedFrame'),null);assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[32,33,31,30]);assert.equal(elem('#frames-resume').hidden,true);
+assert.equal(go('state.selectedFrame'),null);assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[33,32,31,30]);assert.equal(elem('#frames-resume').hidden,true);
 go("selectFrame(state.frames[1])");elem('#return-live').onclick();assert.equal(go('state.frozenFrames'),null);
 console.log('mocked UI: selected frame holds the table, Resume live releases it');
 // A mouse press selects immediately (live re-renders can swallow the click); touch does not.
@@ -122,6 +122,60 @@ go('selectFrame(state.frames[0])');assert.equal(elem('#frame-captured').textCont
 go('selectFrame(state.frames[1])');assert.equal(elem('#frame-captured').textContent,'Complete');
 go("resumeLive();selectFrame({capture_id:52,start_sample:0,fcs_ok:true})");assert.equal(elem('#frame-captured').textContent,'Complete');go('resumeLive()');
 console.log('mocked UI: partial frames marked in table and details');
+// Partial frames with a decoded header match address filters and list newest first among verified frames.
+go("state.selectedFrame=null;state.frozenFrames=null;state.filters={addr1:'',addr2:'',addr3:''};state.verifiedFrames=[{capture_id:60,start_sample:5,fcs_ok:true,addr3:'ca:fe:ba:be:b0:0b'}];state.frames=[{capture_id:61,start_sample:9000,status:'partial',partial:true,fcs_ok:false,header_verified:false,addr3:'ca:fe:ba:be:b0:0b',partial_mpdu_hex:'08000000',signal_length_bytes:1434,captured_us:200,frame_duration_expected_us:500,captured_bytes_estimate:560},{capture_id:59,start_sample:1,status:'partial',partial:true}];renderFrames()");
+assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[61,60,59]);
+go("state.filters={addr1:'',addr2:'',addr3:'ca:fe:ba:be:b0:0b'};renderFrames()");assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[61,60]);
+go('selectFrame(state.frames[0])');assert.equal(elem('#frame-addr3').textContent,'ca:fe:ba:be:b0:0b (unverified)');assert.equal(elem('#frame-mpdu').textContent,'08000000');
+go("resumeLive();state.filters={addr1:'',addr2:'',addr3:''}");
+console.log('mocked UI: partial frames with decoded headers match filters, newest first');
+// A partial frame with decoded symbols shows its corrected data constellation, live and selected.
+go("state.selectedFrame=null;state.frozenFrames=null;state.liveCandidate=null;onFrames({frames:[{capture_id:70,start_sample:9000,status:'partial',partial:true,fcs_ok:false,header_verified:false,phy:'802.11 legacy OFDM',modulation:'16-QAM',rate_mbps:24,constellation:[[0.3,0.3],[-0.9,0.3],[0.9,-0.9]],training_evm_percent:3}]});renderConstellation()");
+assert.equal(go('state.liveCandidate.capture_id'),70);assert.equal(elem('#c-points').textContent,3);assert.equal(elem('#c-title').textContent,'Decoded data-field constellation (partial)');
+assert(elem('#c-description').textContent.includes('not FCS verified'));
+go("onFrames({frames:[{capture_id:71,start_sample:9000,status:'partial',partial:true,constellation:[[1,0]],training_evm_percent:3}]});selectFrame(state.frames.find(f=>f.capture_id===71));renderConstellation()");
+assert.notEqual(elem('#c-title').textContent,'Decoded data-field constellation (partial)');go('resumeLive()');
+console.log('mocked UI: partial frames show their corrected data constellation');
+// "Complete frames only" hides partial frames; Clear filters resets it.
+go("state.selectedFrame=null;state.frozenFrames=null;state.filters={addr1:'',addr2:'',addr3:''};state.fcsOnly=false;state.verifiedFrames=[{capture_id:80,start_sample:1,fcs_ok:true}];state.frames=[{capture_id:81,start_sample:1,partial:true,status:'partial'},{capture_id:79,start_sample:1,partial:false,status:'candidate'}];renderFrames()");
+assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[81,80,79]);
+elem('#filter-complete').checked=true;handlers['#filter-complete:change']();assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[80,79]);
+assert.equal(go('state.completeOnly'),true);
+elem('#clear-filters').onclick();assert.equal(go('state.completeOnly'),false);assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[81,80,79]);
+console.log('mocked UI: complete-frames-only filter');
+// Every detected frame gets an FFT; the caption says which window it covers.
+go("state.framePlot='fft';renderFrameWaveform({capture_id:90,sample_rate_hz:40000000,frame_duration_us:182.4,waveform_scope:'captured part',frame_spectrum_db:[-50,-40,-45]})");
+assert.equal(elem('#channel-meta').textContent,'Capture 90 · 182 µs · captured part (partial frame)');
+go("renderFrameWaveform({capture_id:91,sample_rate_hz:40000000,frame_duration_us:20,waveform_scope:'preamble',frame_spectrum_db:[-50,-40]})");
+assert.equal(elem('#channel-meta').textContent,'Capture 91 · 20 µs · preamble only (SIGNAL not decoded)');
+go("renderFrameWaveform({capture_id:92,sample_rate_hz:40000000})");assert.equal(elem('#channel-meta').textContent,'Frame waveform unavailable');
+console.log('mocked UI: FFT for every detected frame with its window');
+// Address filters take a MAC (exact) or a regular expression; buses are hex ids separated by commas.
+const wj = (slots, extra={}) => { // winject MPDU hex with the given [size,bus] slots
+  const bits=[]; for(const [size] of [...slots, ...Array(5-slots.length).fill([0])]) for(let b=0;b<11;b++) bits.push((size>>b)&1);
+  const packed=Array(12).fill(0); bits.forEach((v,i)=>{const n=i+1; packed[n>>3]|=v<<(n&7);});
+  const body=slots.flatMap(([size,bus])=>[bus,...Array(size-1).fill(0)]);
+  return [0x08,0,0,0,...packed,0xca,0xfe,0xba,0xbe,0xb0,0x0b,0x10,0x00,...body].map(b=>b.toString(16).padStart(2,'0')).join('');
+};
+go(`state.selectedFrame=null;state.frozenFrames=null;state.fcsOnly=false;state.completeOnly=false;state.filters={addr1:'',addr2:'',addr3:'',buses:''};
+ state.verifiedFrames=[{capture_id:100,start_sample:1,fcs_ok:true,addr1:'87:00:00:00:00:00',addr3:'ca:fe:ba:be:b0:0b',mpdu_hex:'${wj([[10,0xc3],[5,0x17]])}'},
+                       {capture_id:101,start_sample:1,fcs_ok:true,addr1:'6d:00:00:00:00:00',addr3:'ca:fe:ba:be:b0:0b',mpdu_hex:'${wj([[8,0xd4]])}'}];
+ state.frames=[{capture_id:102,start_sample:1,partial:true,fcs_ok:false,header_verified:false,addr1:'fd:0a:00:00:00:00',addr3:'ca:fe:ba:be:b0:0b',signal_length_bytes:24+1400+4,partial_mpdu_hex:'${wj([[1400,0xc3]]).slice(0,2*40)}'},
+               {capture_id:103,start_sample:1,fcs_ok:true,addr3:'aa:bb:cc:dd:ee:ff',addr1:'01:02:03:04:05:06'}];renderFrames()`);
+const ids=()=>go('visibleFrames().map(f=>f.capture_id)');
+assert.deepEqual(ids(),[103,102,101,100]);
+const setFilter=(key,value)=>{elem('#filter-'+key).value=value;handlers['#filter-'+key+':input']();};
+setFilter('addr3','^ca:fe');assert.deepEqual(ids(),[102,101,100]);
+setFilter('addr1','^(87|fd)');assert.deepEqual(ids(),[102,100]);
+setFilter('addr1','');setFilter('buses','c3');assert.deepEqual(ids(),[102,100]);
+setFilter('buses','0x17, d4');assert.deepEqual(ids(),[101,100]);
+setFilter('buses','zz');assert(elem('#filter-error').textContent.startsWith('Buses:'));assert.deepEqual(ids(),[101,100]);
+setFilter('buses','');setFilter('addr2','(');assert(elem('#filter-error').textContent.startsWith('Address 2: invalid'));
+setFilter('addr2','');assert.equal(elem('#filter-error').textContent,'');
+setFilter('addr3','CA-FE-BA-BE-B0-0B');assert.deepEqual(ids(),[102,101,100]);
+go('selectFrame(state.frames.find(f=>f.capture_id===102))');assert(elem('#frame-winject').textContent.includes('MPDU: 1424 B (partial, unverified)'));assert(elem('#frame-winject').textContent.includes('bus 0xc3'));
+go('resumeLive()');elem('#clear-filters').onclick();assert.equal(go('state.filters.buses'),'');assert.deepEqual(ids(),[103,102,101,100]);
+console.log('mocked UI: regex address and bus filters');
 
 // Manually select the reference tone and reject frequencies near DC.
 go("state.status.mode='live';state.live={spectrum:{start_hz:2400000000,bin_hz:100000,db:Array(32).fill(-90)}};state.live.spectrum.db[16]=0;state.live.spectrum.db[17]=-1;state.live.spectrum.db[20]=-10;state.live.spectrum.db[23]=-20");

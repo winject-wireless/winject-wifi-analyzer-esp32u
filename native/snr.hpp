@@ -77,6 +77,22 @@ inline double chi2_quantile_over_mean(double k, double z)
     return c * c * c;
 }
 
+// Noise floor of a whole capture (no frame excluded): the same corrected 25th percentile.
+// A busy capture reads high; callers keep a low percentile over recent captures.
+inline double capture_floor(const std::vector<std::complex<float>>& x)
+{
+    const int n = int(x.size());
+    if (n < k_block * k_min_noise_blocks) return NAN;
+    std::complex<double> dc{};
+    for (auto z : x) dc += std::complex<double>(z);
+    dc /= double(n);
+    std::vector<double> blocks;
+    for (int b = 0; b + k_block <= n; b += k_block) blocks.push_back(inband_power(&x[b], dc));
+    const size_t q = blocks.size() / 4;
+    std::nth_element(blocks.begin(), blocks.begin() + q, blocks.end());
+    return blocks[q] / chi2_quantile_over_mean(4.0 * k_half_band, -0.6745);
+}
+
 inline Estimate estimate(const std::vector<std::complex<float>>& x, int start, int end)
 {
     Estimate e;

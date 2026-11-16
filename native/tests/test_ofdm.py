@@ -171,6 +171,26 @@ class NativeOfdmReference(unittest.TestCase):
         self.assertGreaterEqual(len(got),5)
         self.assertAlmostEqual(float(np.median(got)),20,delta=1.0)
 
+    def test_partial_decode_returns_the_captured_header(self):
+        # Cut off by the end of the capture, the frame cannot be FCS verified, but the
+        # captured symbols still decode: the leading bytes must match the real MPDU.
+        header=bytes.fromhex('08000000 0f0700000000 000000000000 cafebabeb00b f03b')
+        mpdu=header+bytes((i*37)&255 for i in range(600))
+        for rate in (6,24,54):
+            with self.subTest(rate=rate):
+                samples,short,long=make_frame(mpdu,rate=rate)
+                cut=samples[:long+(64+128+80*12)*2]  # LTF, SIGNAL and 12 data symbols
+                path=pathlib.Path(self.temp.name)/f'partial-{rate}.cf32'
+                np.asarray(cut,np.complex64).tofile(path)
+                for exe in (self.exe,self.scalar):
+                    r=subprocess.run([exe,path,str(short),str(long)],capture_output=True,text=True,check=True)
+                    self.assertEqual(r.stdout,'','a partial frame must not FCS-verify')
+                    lines=[l.split() for l in r.stderr.splitlines() if l.startswith('partial ')]
+                    self.assertTrue(lines,'no partial decode')
+                    n,hexbytes=int(lines[0][1]),lines[0][2]
+                    self.assertGreaterEqual(n,len(header) if rate>=24 else 1)
+                    self.assertEqual(bytes.fromhex(hexbytes),mpdu[:n])
+
     def test_detector_reports_signal_before_payload_fcs(self):
         mpdu=bytes.fromhex('08000000 ffffffffffff 102030405060 aabbccddeeff 3012')+b'legacy OFDM detector'
         path=pathlib.Path(self.temp.name)/'header.cf32'

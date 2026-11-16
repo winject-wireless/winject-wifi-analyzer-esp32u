@@ -4,7 +4,7 @@ const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelect
 const state = {
   status: null, live: null, liveAt: 0, snapshot: null, points: 'corrected',
   history: [], sweep: {}, peakHold: null,
-  frames: [], verifiedFrames: [], selectedFrame: null, liveCandidate: null, liveCandidateAt: 0, filters: {addr1: '', addr2: '', addr3: ''}, fcsOnly: false, framePlot: 'fft', calibration: null,
+  frames: [], verifiedFrames: [], selectedFrame: null, liveCandidate: null, liveCandidateAt: 0, filters: {addr1: '', addr2: '', addr3: '', buses: ''}, fcsOnly: false, completeOnly: false, framePlot: 'fft', calibration: null,
 };
 let ws = null;
 const preferencesKey = 'winject-analyzer-view-v1';
@@ -15,10 +15,10 @@ function savePreferences() {
   const activeDetector = $('[data-detector].active');
   const preferences = {
     view: activeView?.dataset.view, detector: activeDetector?.dataset.detector,
-    framePlot: state.framePlot, fcsOnly: state.fcsOnly, filters: state.filters,
+    framePlot: state.framePlot, fcsOnly: state.fcsOnly, completeOnly: state.completeOnly, filters: state.filters,
     sweepInputs: Object.fromEntries(sweepValueFields.map(id => [id, $(`#${id}`).value])),
     sweepRepeat: $('#sweep-repeat').checked,
-    filterInputs: Object.fromEntries(['addr1', 'addr2', 'addr3'].map(k => [k, $(`#filter-${k}`).value])),
+    filterInputs: Object.fromEntries(FILTER_KEYS.map(k => [k, $(`#filter-${k}`).value])),
   };
   try { localStorage.setItem(preferencesKey, JSON.stringify(preferences)); } catch (_) { /* Storage may be unavailable. */ }
 }
@@ -46,13 +46,17 @@ function restorePreferences() {
   if (plot) { state.framePlot = saved.framePlot; $$('[data-frame-plot]').forEach(b => b.classList.toggle('active', b === plot)); }
   state.fcsOnly = saved.fcsOnly === true;
   $('#filter-fcs').checked = state.fcsOnly;
-  for (const key of ['addr1', 'addr2', 'addr3']) {
-    const value = typeof saved.filters?.[key] === 'string' ? normalizeMac(saved.filters[key]) : '';
-    state.filters[key] = value || '';
-    $(`#filter-${key}`).value = typeof saved.filterInputs?.[key] === 'string' ? saved.filterInputs[key] : state.filters[key];
+  state.completeOnly = saved.completeOnly === true;
+  $('#filter-complete').checked = state.completeOnly;
+  const errors = [];
+  for (const key of FILTER_KEYS) {
+    const raw = typeof saved.filterInputs?.[key] === 'string' ? saved.filterInputs[key] : typeof saved.filters?.[key] === 'string' ? saved.filters[key] : '';
+    $(`#filter-${key}`).value = raw;
+    const error = filterError(key, raw);
+    state.filters[key] = error ? '' : raw.trim();
+    if (error) errors.push(error);
   }
-  if (['addr1', 'addr2', 'addr3'].some(k => normalizeMac($(`#filter-${k}`).value) === null))
-    $('#filter-error').textContent = 'Use six hexadecimal octets, for example ca:fe:ba:be:00:01.';
+  $('#filter-error').textContent = errors.join(' ');
 }
 
 
@@ -467,7 +471,8 @@ $('#calibration-file').onchange=async e=>{ try { const c=JSON.parse(await e.targ
 $('#calibration-save').onclick=()=>{ if (!state.calibration) { toast('No calibration to save'); return; } const url=URL.createObjectURL(new Blob([JSON.stringify(state.calibration,null,2)],{type:'application/json'})), a=document.createElement('a'); a.href=url; a.download='winject-calibration.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); };
 
 function frameId(f) { return `${f.capture_id}:${f.start_sample}`; }
-function frameAddresses(f) { if (!f?.fcs_ok) return {}; return f.addresses && typeof f.addresses === 'object' ? f.addresses : {addr1: f.addr1, addr2: f.addr2, addr3: f.addr3}; }
+// Partial frames carry addresses decoded from the captured header (no FCS: unverified).
+function frameAddresses(f) { if (!f?.fcs_ok && f?.header_verified !== false) return {}; return f.addresses && typeof f.addresses === 'object' ? f.addresses : {addr1: f.addr1, addr2: f.addr2, addr3: f.addr3}; }
 function readable(v) { return v === null || v === undefined || v === '' ? 'Unavailable' : String(v); }
 function evmText(v) { return typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(2)} %` : 'Unavailable'; }
 function modulationRate(f) {
@@ -482,10 +487,58 @@ function normalizeMac(s) {
   if (!/^[0-9a-f]{12}$/.test(compact)) return null;
   return compact.match(/../g).join(':');
 }
+// Address filters: a plain MAC (any separators or case) matches that address exactly; anything
+// else is a case-insensitive regular expression tested against "aa:bb:cc:dd:ee:ff".
+// Buses: hex bus ids separated by commas ("c3, 0x17"); a frame matches when any of its
+// winject slots is on one of them.
+const FILTER_KEYS = ['addr1', 'addr2', 'addr3', 'buses'];
+const FILTER_LABELS = {addr1: 'Address 1', addr2: 'Address 2', addr3: 'Address 3', buses: 'Buses'};
+const filterCache = new Map();
+function addressMatcher(pattern) {
+  const key = `a:${pattern}`;
+  if (!filterCache.has(key)) {
+    const mac = normalizeMac(pattern);
+    const re = mac ? null : new RegExp(pattern, 'i');  // throws on an invalid pattern
+    filterCache.set(key, a => !!a && (mac ? normalizeMac(a) === mac : re.test(a)));
+  }
+  return filterCache.get(key);
+}
+function busSet(text) {
+  const key = `b:${text}`;
+  if (!filterCache.has(key)) {
+    const buses = text.split(',').map(t => t.trim()).filter(Boolean).map(t => {
+      if (!/^(0x)?[0-9a-f]{1,2}$/i.test(t)) throw new Error(t);
+      return parseInt(t.replace(/^0x/i, ''), 16);
+    });
+    filterCache.set(key, new Set(buses));
+  }
+  return filterCache.get(key);
+}
+function filterError(key, raw) {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  try { key === 'buses' ? busSet(value) : addressMatcher(value); return ''; }
+  catch (_) { return key === 'buses' ? 'Buses: use hex bus ids separated by commas, for example c3, 17.' : `${FILTER_LABELS[key]}: invalid regular expression.`; }
+}
+function frameBuses(f) {
+  const w = decodeWinject(f);
+  return w ? w.slots.filter(s => s.size && Number.isInteger(s.bus)).map(s => s.bus) : [];
+}
 function matchesFilters(frame) {
   const addr = frameAddresses(frame);
   if (state.fcsOnly && !frame.fcs_ok) return false;
-  return Object.entries(state.filters).every(([key, value]) => !value || (normalizeMac(addr[key] || '') === value));
+  // Complete frames only: hide frames cut off by the end of the capture.
+  if (state.completeOnly && frame.partial === true) return false;
+  for (const key of ['addr1', 'addr2', 'addr3']) {
+    const value = state.filters[key];
+    if (value && !filterError(key, value) && !addressMatcher(value)(addr[key])) return false;
+  }
+  const buses = state.filters.buses;
+  if (buses && !filterError('buses', buses)) {
+    const want = busSet(buses);
+    if (want.size && !frameBuses(frame).some(b => want.has(b))) return false;
+  }
+  return true;
 }
 function filtersChanged() {
   if (state.liveCandidate && !matchesFilters(state.liveCandidate)) state.liveCandidate = null;
@@ -499,7 +552,7 @@ function onFrames(d) {
   state.frames = [...byId.values()].slice(-200);
   state.verifiedFrames = [...verified.values()].slice(-100);
   if (d?.history !== true) {
-    const usable = [...frames].reverse().find(f => f.fcs_ok === true && matchesFilters(f));
+    const usable = [...frames].reverse().find(f => hasDataSymbols(f) && matchesFilters(f));
     if (usable) { state.liveCandidate = usable; state.liveCandidateAt = performance.now(); }
   }
   if (state.selectedFrame) state.selectedFrame = verified.get(frameId(state.selectedFrame)) || byId.get(frameId(state.selectedFrame)) || state.selectedFrame;
@@ -513,10 +566,11 @@ function visibleFrames() {
   if (state.selectedFrame && state.frozenFrames) return state.frozenFrames.filter(matchesFilters);
   return liveFrames();
 }
+// One time-ordered list, newest first: verified, partial and candidate rows interleaved.
 function liveFrames() {
-  const verifiedIds = new Set(state.verifiedFrames.map(frameId));
-  const all = [...state.verifiedFrames.slice().reverse(), ...state.frames.slice().reverse().filter(f => !verifiedIds.has(frameId(f)))];
-  return all.filter(matchesFilters);
+  const byId = new Map(state.frames.map(f => [frameId(f), f]));
+  for (const f of state.verifiedFrames) byId.set(frameId(f), f);
+  return [...byId.values()].sort((a, b) => (b.capture_id - a.capture_id) || (b.start_sample - a.start_sample)).filter(matchesFilters);
 }
 function selectFrame(f) {
   if (!state.selectedFrame || !state.frozenFrames) state.frozenFrames = liveFrames();
@@ -541,8 +595,11 @@ function frameSize(f) {
   return f?.fcs_ok && typeof f.mpdu_hex === 'string' && /^(?:[0-9a-f]{2})+$/i.test(f.mpdu_hex) ? f.mpdu_hex.length / 2 + 4 : null;
 }
 function decodeWinject(f) {
-  const hex = f?.mpdu_hex;
-  if (!f?.fcs_ok || typeof hex !== 'string' || !/^(?:[0-9a-f]{2})+$/i.test(hex)) return null;
+  // Partial frames: the captured bytes (unverified); slot sizes are checked against the full
+  // MPDU length from SIGNAL, and slots past the captured bytes have no bus.
+  const partial = !f?.fcs_ok && f?.header_verified === false;
+  const hex = f?.fcs_ok ? f.mpdu_hex : partial ? f.partial_mpdu_hex : null;
+  if (typeof hex !== 'string' || !/^(?:[0-9a-f]{2})+$/i.test(hex)) return null;
   const bytes = hex.match(/../g).map(x => parseInt(x, 16));
   // Mpdu::rescan accepts plain data frames with no flags and exact slot layout.
   if (bytes.length < 24 || bytes[0] !== 0x08 || bytes[1] !== 0 ||
@@ -556,17 +613,18 @@ function decodeWinject(f) {
     }
     return value;
   });
-  if (sizes.reduce((a, b) => a + b, 0) !== bytes.length - 24) return null;
+  const total = partial ? f.signal_length_bytes - 4 : bytes.length;
+  if (!Number.isFinite(total) || sizes.reduce((a, b) => a + b, 0) !== total - 24) return null;
   let offset = 24;
   const slots = sizes.map((size, index) => {
-    const slot = {index, size, offset, bus: size ? bytes[offset] : null};
+    const slot = {index, size, offset, bus: size && offset < bytes.length ? bytes[offset] : null};
     offset += size;
     return slot;
   });
-  return {domain: (bytes[20] << 8) | bytes[21], slots};
+  return {domain: (bytes[20] << 8) | bytes[21], slots, partial, length: total};
 }
 function renderMpdu(f, winject) {
-  const el = $('#frame-mpdu'), hex = f?.mpdu_hex;
+  const el = $('#frame-mpdu'), hex = f?.mpdu_hex || f?.partial_mpdu_hex;
   el.replaceChildren();
   if (!hex) { el.textContent = 'Not decoded'; return; }
   if (!winject) { el.textContent = hex; return; }
@@ -586,10 +644,11 @@ function renderMpdu(f, winject) {
 // Partial frames run past the end of the capture: the host reports the SIGNAL length, the
 // expected airtime and how much of it the capture holds. They can never be FCS verified.
 function partialPercent(f) {
-  return f?.partial && f.frame_duration_expected_us > 0 ? Math.round(100 * f.captured_us / f.frame_duration_expected_us) : null;
+  return f?.partial && f.frame_duration_expected_us > 0 && Number.isFinite(f.captured_us) ? Math.round(100 * f.captured_us / f.frame_duration_expected_us) : null;
 }
 function resultText(f) {
-  return f.partial ? `Partial · ${partialPercent(f)} %` : (f.status || 'Candidate');
+  if (f.partial) { const pct = partialPercent(f); return pct === null ? 'Partial' : `Partial · ${pct} %`; }
+  return f.status || 'Candidate';
 }
 function frameSizeText(f) {
   if (f.partial && Number.isFinite(f.signal_length_bytes)) return `~${f.captured_bytes_estimate ?? 0} of ${f.signal_length_bytes} B`;
@@ -597,7 +656,11 @@ function frameSizeText(f) {
 }
 function capturedText(f) {
   if (!f) return '—';
-  if (f.partial) return `Partial · ~${f.captured_bytes_estimate ?? 0} of ${f.signal_length_bytes} B · ${f.captured_us.toFixed(0)} of ${f.frame_duration_expected_us.toFixed(0)} µs`;
+  if (f.partial) {
+    const bytes = Number.isFinite(f.signal_length_bytes) ? `~${f.captured_bytes_estimate ?? 0} of ${f.signal_length_bytes} B` : null;
+    const time = Number.isFinite(f.captured_us) && Number.isFinite(f.frame_duration_expected_us) ? `${f.captured_us.toFixed(0)} of ${f.frame_duration_expected_us.toFixed(0)} µs` : null;
+    return ['Partial', bytes, time].filter(Boolean).join(' · ');
+  }
   if (f.partial === false || f.fcs_ok) return 'Complete';
   return 'Unavailable';
 }
@@ -635,12 +698,13 @@ function renderFrames() {
   $('#frame-phy').textContent = f ? readable(f.phy) : '—';
   $('#frame-modulation').textContent = f ? modulationRate(f) : '—';
   $('#frame-captured').textContent = capturedText(f);
-  for (const key of ['addr1', 'addr2', 'addr3']) $(`#frame-${key}`).textContent = f ? readable(a[key]) : '—';
+  const unverified = f?.header_verified === false;
+  for (const key of ['addr1', 'addr2', 'addr3']) $(`#frame-${key}`).textContent = f ? readable(a[key]) + (unverified && a[key] ? ' (unverified)' : '') : '—';
   $('#frame-evm').textContent = f ? evmText(f.evm_percent) : 'Unavailable';
   $('#frame-status').textContent = f ? [f.reason || f.status || 'Preamble candidate; frame not decoded.', f.fcs_ok ? f.evm_warning : f.training_warning].filter(Boolean).join(' ') : 'Decoded frame fields appear when available.';
   const winject = decodeWinject(f);
   renderMpdu(f, winject);
-  $('#frame-winject').textContent = winject ? [`Domain: 0x${winject.domain.toString(16).padStart(4, '0')}`, `MPDU: ${frameSize(f)} B`, ...winject.slots.map(s => `#${s.index}: ${s.size} B${s.bus === null ? '' : ` · bus 0x${s.bus.toString(16).padStart(2, '0')}`}`)].join('\n') : 'Not a decoded winject frame';
+  $('#frame-winject').textContent = winject ? [`Domain: 0x${winject.domain.toString(16).padStart(4, '0')}`, winject.partial ? `MPDU: ${winject.length} B (partial, unverified)` : `MPDU: ${frameSize(f)} B`, ...winject.slots.map(s => `#${s.index}: ${s.size} B${s.bus === null ? (s.size && winject.partial ? ' · bus not captured' : '') : ` · bus 0x${s.bus.toString(16).padStart(2, '0')}`}`)].join('\n') : 'Not a decoded winject frame';
   $('#frame-gain').textContent = Number.isFinite(f?.gain_index) ? `${f.gain_index} (${f.agc === true ? 'AGC' : f.agc === false ? 'manual' : 'mode unknown'})` : 'Unavailable';
   const frameOffset = frameCalibrationOffset(f);
   for (const [id, key] of [['peak', 'frame_peak_dbfs'], ['mean', 'frame_mean_dbfs'], ['noise', 'noise_floor_dbfs']]) $(`#frame-${id}`).textContent = framePowerText(f?.[key], frameOffset);
@@ -676,17 +740,20 @@ function drawTraining(src) {
   x.fillStyle = '#36e5d2aa';
   for (const p of points) if (Number.isFinite(p[0]) && Number.isFinite(p[1])) { x.beginPath(); x.arc(plot.cx+p[0]*plot.scale,plot.cy-p[1]*plot.scale,2,0,7); x.fill(); }
 }
+// Pilot-corrected data symbols exist for verified frames and for partial frames whose
+// captured symbols were decoded (pilots are in every symbol; only the FCS is missing).
+function hasDataSymbols(f) { return !!f && (f.fcs_ok === true || (f.partial === true && f.header_verified === false)); }
 function renderConstellation() {
   const isFrame = state.points === 'frame', snapshot = state.points === 'snapshot';
   const corrected = state.points === 'corrected' || isFrame;
   const candidate = displayedCandidate();
   const liveFresh = state.status?.mode === 'live' && ws?.readyState === WebSocket.OPEN && performance.now() - state.liveAt < 3000;
   const src = corrected ? candidate : snapshot ? state.snapshot : liveFresh ? state.live : null;
-  const pts = corrected ? (src?.fcs_ok ? src?.constellation : []) : src?.points;
+  const pts = corrected ? (hasDataSymbols(src) ? src.constellation : []) : src?.points;
   const valid = Array.isArray(pts) ? pts.filter(p => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1])) : [];
   $('#data-empty').hidden = valid.length > 0;
   $('#data-empty').textContent = src ? 'Decoded data symbols unavailable for this frame' : 'Waiting for decoded data symbols';
-  const showPayload = corrected && !!src?.fcs_ok && valid.length > 0;
+  const showPayload = corrected && hasDataSymbols(src) && valid.length > 0, partialPayload = showPayload && !src.fcs_ok;
   const trainingEvm = corrected && !showPayload && valid.length > 0 && Number.isFinite(src?.training_evm_percent);
   const {x, w, h} = canvas('#constellation-canvas'); x.clearRect(0, 0, w, h); const plot = constellationGrid(x, w, h);
   if (valid.length) {
@@ -701,10 +768,10 @@ function renderConstellation() {
   rawCanvas.x.fillStyle = '#46a4ff99';
   for (const [i, q] of raw) { rawCanvas.x.beginPath(); rawCanvas.x.arc(rawPlot.cx + i * rawPlot.scale, rawPlot.cy - q * rawPlot.scale, 1.8, 0, 7); rawCanvas.x.fill(); }
   $('#c-kind').textContent = isFrame ? 'SELECTED FRAME' : corrected ? (src ? `LIVE FRAME · CAPTURE ${src.capture_id}` : 'LIVE · WAITING FOR COMPLETE FRAME') : snapshot ? `SNAPSHOT #${src?.capture_id ?? '—'}` : 'LIVE RAW IQ';
-  $('#c-title').textContent = showPayload ? 'Decoded data-field constellation' : corrected ? 'Corrected constellation' : snapshot ? 'Frozen raw IQ' : 'Raw baseband IQ';
+  $('#c-title').textContent = partialPayload ? 'Decoded data-field constellation (partial)' : showPayload ? 'Decoded data-field constellation' : corrected ? 'Corrected constellation' : snapshot ? 'Frozen raw IQ' : 'Raw baseband IQ';
   const trainingName = src?.training_kind || (/ofdm/i.test(src?.phy || '') || /ofdm/i.test(src?.detection || '') ? 'L-LTF' : 'Training');
   const phyText = [src?.phy, modulationRate(src)].filter(x => x && x !== 'Unavailable').join(' · ');
-  $('#c-description').textContent = showPayload ? `Corrected data symbols for an FCS-verified${phyText ? ` ${phyText}` : ''} frame.` : corrected ? (valid.length ? `Estimated equalized ${trainingName} training symbols for an unverified preamble candidate. These are not decoded payload symbols.` : 'No current corrected constellation is available. Waiting for a usable candidate.') : src ? 'Samples are shown before frame synchronization or equalization. They are not demodulated symbols.' : 'No current raw IQ burst is available.';
+  $('#c-description').textContent = partialPayload ? `Corrected data symbols captured before the end of the capture for a partial${phyText ? ` ${phyText}` : ''} frame; not FCS verified.` : showPayload ? `Corrected data symbols for an FCS-verified${phyText ? ` ${phyText}` : ''} frame.` : corrected ? (valid.length ? `Estimated equalized ${trainingName} training symbols for an unverified preamble candidate. These are not decoded payload symbols.` : 'No current corrected constellation is available. Waiting for a usable candidate.') : src ? 'Samples are shown before frame synchronization or equalization. They are not demodulated symbols.' : 'No current raw IQ burst is available.';
   $('#c-points').textContent = valid.length || '—';
   $('#c-freq').textContent = src?.frequency_hz ? mhz(src.frequency_hz) : '—';
   $('#c-rate').textContent = src?.sample_rate_hz ? `${src.sample_rate_hz / 1e6} MS/s` : '—';
@@ -734,11 +801,15 @@ function renderFrameWaveform(frame) {
   const {x,w,h} = canvas('#channel-canvas'); x.clearRect(0,0,w,h); grid(x,w,h);
   const offset = frameCalibrationOffset(frame);
   $('#channel-note').textContent = fft ? (Number.isFinite(offset) ? `Mean spectral power per FFT bin · dBm estimated using center-frequency calibration and capture-start gain.${frame?.agc ? ' AGC may change during the frame.' : ''}${frame?.frame_clipped ? ' Samples clipped.' : ''}` : 'Mean spectral power per FFT bin · dBFS. dBm requires matching calibration.') : Number.isFinite(offset) ? `Peak power per time bucket; dBm is estimated using capture-start gain.${frame?.agc ? ' AGC may change during the frame.' : ''}${frame?.frame_clipped ? ' Samples clipped.' : ''}` : 'Peak power per time bucket · dBFS. dBm requires matching calibration.';
-  $('#plot-scale').textContent = fft ? `−${(frame?.sample_rate_hz || 0)/2e6} MHz                                +${(frame?.sample_rate_hz || 0)/2e6} MHz` : `0 µs                                ${frame?.frame_duration_us ?? '—'} µs`;
-  if (!Array.isArray(values) || values.length < 2) { $('#channel-meta').textContent = 'Complete frame waveform unavailable'; return; }
+  const duration = Number.isFinite(frame?.frame_duration_us) ? `${frame.frame_duration_us.toFixed(0)} µs` : '—';
+  $('#plot-scale').textContent = fft ? `−${(frame?.sample_rate_hz || 0)/2e6} MHz                                +${(frame?.sample_rate_hz || 0)/2e6} MHz` : `0 µs                                ${duration}`;
+  if (!Array.isArray(values) || values.length < 2) { $('#channel-meta').textContent = 'Frame waveform unavailable'; return; }
   const min = Math.floor(Math.min(...values)/10)*10, max = Math.max(min+10, Math.ceil(Math.max(...values)/10)*10);
   trace(x, values.map((_,i)=>i), values, i=>i/(values.length-1)*w, v=>h-(v-min)/(max-min)*h, h, '#36e5d2'); spectrumAxisLabels(x,w,h,min,max,offset);
-  $('#channel-meta').textContent = `Capture ${frame.capture_id} · ${frame.frame_duration_us} µs`;
+  // Every detected frame has a waveform: the whole frame, the captured part of a partial one,
+  // or only the preamble when SIGNAL did not decode.
+  const scope = {'captured part': ' · captured part (partial frame)', preamble: ' · preamble only (SIGNAL not decoded)'}[frame.waveform_scope] || '';
+  $('#channel-meta').textContent = `Capture ${frame.capture_id} · ${duration}${scope}`;
 }
 function selectPoints(which) { state.points = which; $$('[data-points]').forEach((b) => b.classList.toggle('active', b.dataset.points === which)); renderConstellation(); renderChannelResponse(); }
 
@@ -926,6 +997,7 @@ for (const id of ['freq','rate','gain','gain-index','bw','n','bits']) $(`#${id}`
   send(config());
 });
 $('#filter-fcs').addEventListener('change', () => { state.fcsOnly = $('#filter-fcs').checked; filtersChanged(); savePreferences(); });
+$('#filter-complete').addEventListener('change', () => { state.completeOnly = $('#filter-complete').checked; filtersChanged(); savePreferences(); });
 $$('[data-frame-plot]').forEach(b => b.onclick = () => { state.framePlot = b.dataset.framePlot; $$('[data-frame-plot]').forEach(x => x.classList.toggle('active', x === b)); renderChannelResponse(); savePreferences(); });
 $('#frames-scroll').addEventListener('keydown', e => {
   if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
@@ -950,14 +1022,15 @@ $('#return-live').onclick = resumeLive;
 $('#frames-resume').onclick = resumeLive;
 $('#run').onclick = () => send({op: 'live', on: state.status?.mode !== 'live'});
 $('#snapshot').onclick = () => send({op: 'snapshot'});
-for (const key of ['addr1', 'addr2', 'addr3']) {
+for (const key of FILTER_KEYS) {
   $(`#filter-${key}`).addEventListener('input', () => {
-    const values = Object.fromEntries(['addr1', 'addr2', 'addr3'].map(k => [k, normalizeMac($(`#filter-${k}`).value)]));
-    if (Object.values(values).some(v => v === null)) { savePreferences(); $('#filter-error').textContent = 'Use six hexadecimal octets, for example ca:fe:ba:be:00:01.'; return; }
-    $('#filter-error').textContent = ''; state.filters = values; filtersChanged(); savePreferences();
+    const raw = Object.fromEntries(FILTER_KEYS.map(k => [k, $(`#filter-${k}`).value.trim()]));
+    const errors = FILTER_KEYS.map(k => filterError(k, raw[k])).filter(Boolean);
+    if (errors.length) { savePreferences(); $('#filter-error').textContent = errors.join(' '); return; }
+    $('#filter-error').textContent = ''; state.filters = raw; filtersChanged(); savePreferences();
   });
 }
-$('#clear-filters').onclick = () => { for (const key of ['addr1', 'addr2', 'addr3']) $(`#filter-${key}`).value = ''; state.filters = {addr1: '', addr2: '', addr3: ''}; state.fcsOnly = false; $('#filter-fcs').checked = false; $('#filter-error').textContent = ''; filtersChanged(); savePreferences(); };
+$('#clear-filters').onclick = () => { for (const key of FILTER_KEYS) $(`#filter-${key}`).value = ''; state.filters = {addr1: '', addr2: '', addr3: '', buses: ''}; state.fcsOnly = false; $('#filter-fcs').checked = false; state.completeOnly = false; $('#filter-complete').checked = false; $('#filter-error').textContent = ''; filtersChanged(); savePreferences(); };
 const sweepRateHz = 40_000_000;
 const sweepLpfMhz = 20;
 

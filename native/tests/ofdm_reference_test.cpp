@@ -26,6 +26,15 @@ int main(int argc, char** argv)
             std::cerr << "cand_ltf_snr " << ltf_snr_db(c) << "\n";
         }
         auto d = decode(x, c, 40000000);
+        if (!d && c.signal_valid)
+        {
+            if (auto p = decode_partial(x, c, 40000000))
+            {
+                std::cerr << "partial " << p->mpdu.size() << " ";
+                for (auto b : p->mpdu) std::cerr << "0123456789abcdef"[b >> 4] << "0123456789abcdef"[b & 15];
+                std::cerr << "\n";
+            }
+        }
         if (d)
         {
             if (!d->raw_data_iq.empty() && !d->constellation.empty())
