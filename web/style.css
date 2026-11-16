@@ -322,3 +322,5 @@ body:has(#view-sweep.active){height:100dvh;overflow:hidden}
 ::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-radius:6px;border:2px solid var(--panel)}
 ::-webkit-scrollbar-thumb:hover{background:var(--scroll-thumb-hover)}
 ::-webkit-scrollbar-thumb:active{background:var(--cyan)}
+/* Frames cut off by the end of the capture (never FCS verifiable). */
+#frames-body tr.partial td{color:var(--amber)}

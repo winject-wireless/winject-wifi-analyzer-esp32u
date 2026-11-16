@@ -71,6 +71,8 @@ async def run():
   key=next(iter(common));header=headers[key];payload=payloads[key]
   assert header['signal_length_bytes']==len(payload['mpdu_hex'])//2+4 and header['signal_modulation']=='16-QAM'
   assert not header.get('fcs_ok',False) and payload['fcs_ok']
+  assert header['partial'] is False and header['frame_duration_expected_us']>20 and header['captured_us']==header['frame_duration_expected_us']
+  assert math.isfinite(header['frame_mean_dbfs']) and math.isfinite(header['frame_peak_dbfs']) and isinstance(header['frame_clipped'],bool) and header['ltf_snr_db'] is not None
   assert payload['constellation'] and payload['training_constellation'] and payload['channel_estimate']
   assert payload['raw_training_iq'] and payload['raw_data_iq']
   assert len(payload['raw_training_iq']) <= 1024 and len(payload['raw_data_iq']) <= 1024

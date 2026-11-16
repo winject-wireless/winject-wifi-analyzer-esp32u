@@ -583,13 +583,31 @@ function renderMpdu(f, winject) {
     add(slot.offset + 1, slot.offset + slot.size, `mpdu-pdu slot-${slot.index}`, `Slot ${slot.index} PDU`);
   }
 }
+// Partial frames run past the end of the capture: the host reports the SIGNAL length, the
+// expected airtime and how much of it the capture holds. They can never be FCS verified.
+function partialPercent(f) {
+  return f?.partial && f.frame_duration_expected_us > 0 ? Math.round(100 * f.captured_us / f.frame_duration_expected_us) : null;
+}
+function resultText(f) {
+  return f.partial ? `Partial · ${partialPercent(f)} %` : (f.status || 'Candidate');
+}
+function frameSizeText(f) {
+  if (f.partial && Number.isFinite(f.signal_length_bytes)) return `~${f.captured_bytes_estimate ?? 0} of ${f.signal_length_bytes} B`;
+  return frameSize(f) === null ? 'Unavailable' : `${frameSize(f)} B`;
+}
+function capturedText(f) {
+  if (!f) return '—';
+  if (f.partial) return `Partial · ~${f.captured_bytes_estimate ?? 0} of ${f.signal_length_bytes} B · ${f.captured_us.toFixed(0)} of ${f.frame_duration_expected_us.toFixed(0)} µs`;
+  if (f.partial === false || f.fcs_ok) return 'Complete';
+  return 'Unavailable';
+}
 function frameRowValues(f) {
   const address = frameAddresses(f);
   return [`${f.capture_id}.${f.start_sample}`, readable(f.phy), modulationRate(f),
     evmText(f.evm_percent), framePowerText(f.frame_mean_dbfs, frameCalibrationOffset(f)),
     snrText(f.snr_db), snrText(f.ltf_snr_db), framePowerText(f.noise_floor_dbfs, frameCalibrationOffset(f)),
     f.frame_clipped === true ? 'Yes' : f.frame_clipped === false ? 'No' : 'Unavailable',
-    readable(address.addr3), f.status || 'Candidate', frameSize(f) === null ? 'Unavailable' : `${frameSize(f)} B`];
+    readable(address.addr3), resultText(f), frameSizeText(f)];
 }
 function renderFrames() {
   const list = visibleFrames();
@@ -601,6 +619,7 @@ function renderFrames() {
   for (const f of list) {
     const tr = document.createElement('tr');
     if (state.selectedFrame && frameId(state.selectedFrame) === frameId(f)) tr.classList.add('selected');
+    if (f.partial) tr.classList.add('partial');
     for (const value of frameRowValues(f)) {
       const td = document.createElement('td'); td.textContent = String(value); tr.appendChild(td);
     }
@@ -615,6 +634,7 @@ function renderFrames() {
   $('#frame-title').textContent = f ? `Capture ${f.capture_id} · sample ${f.start_sample}` : 'Choose a candidate';
   $('#frame-phy').textContent = f ? readable(f.phy) : '—';
   $('#frame-modulation').textContent = f ? modulationRate(f) : '—';
+  $('#frame-captured').textContent = capturedText(f);
   for (const key of ['addr1', 'addr2', 'addr3']) $(`#frame-${key}`).textContent = f ? readable(a[key]) : '—';
   $('#frame-evm').textContent = f ? evmText(f.evm_percent) : 'Unavailable';
   $('#frame-status').textContent = f ? [f.reason || f.status || 'Preamble candidate; frame not decoded.', f.fcs_ok ? f.evm_warning : f.training_warning].filter(Boolean).join(' ') : 'Decoded frame fields appear when available.';

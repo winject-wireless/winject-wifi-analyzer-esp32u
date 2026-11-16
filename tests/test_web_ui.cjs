@@ -114,6 +114,14 @@ press('touch',go('state.frames[0]'));assert.equal(go('state.selectedFrame'),null
 press('mouse',go('state.frames[0]'));assert.equal(go('state.selectedFrame.capture_id'),40);assert.equal(elem('#frames-resume').hidden,false);
 go("resumeLive()");
 console.log('mocked UI: mouse press selects a frame before the live table re-renders');
+// Partial frames (cut off by the capture end) are marked in the table and details.
+go("state.selectedFrame=null;state.frozenFrames=null;state.verifiedFrames=[];state.frames=[{capture_id:50,start_sample:15000,signal_valid:true,signal_rate_mbps:24,signal_length_bytes:931,status:'partial',partial:true,frame_duration_expected_us:332,captured_us:34.5,captured_bytes_estimate:24,reason:'Partial frame: the capture ends 298 us before the frame does'},{capture_id:51,start_sample:100,signal_valid:true,signal_rate_mbps:24,signal_length_bytes:95,status:'candidate',partial:false,frame_duration_expected_us:56,captured_us:56}];renderFrames()");
+let prow=go('frameRowValues(state.frames[0])');assert.equal(prow[prow.length-2],'Partial · 10 %');assert.equal(prow[prow.length-1],'~24 of 931 B');
+let crow=go('frameRowValues(state.frames[1])');assert.equal(crow[crow.length-2],'candidate');assert.equal(crow[crow.length-1],'Unavailable');
+go('selectFrame(state.frames[0])');assert.equal(elem('#frame-captured').textContent,'Partial · ~24 of 931 B · 35 of 332 µs');assert(elem('#frame-status').textContent.startsWith('Partial frame'));
+go('selectFrame(state.frames[1])');assert.equal(elem('#frame-captured').textContent,'Complete');
+go("resumeLive();selectFrame({capture_id:52,start_sample:0,fcs_ok:true})");assert.equal(elem('#frame-captured').textContent,'Complete');go('resumeLive()');
+console.log('mocked UI: partial frames marked in table and details');
 
 // Manually select the reference tone and reject frequencies near DC.
 go("state.status.mode='live';state.live={spectrum:{start_hz:2400000000,bin_hz:100000,db:Array(32).fill(-90)}};state.live.spectrum.db[16]=0;state.live.spectrum.db[17]=-1;state.live.spectrum.db[20]=-10;state.live.spectrum.db[23]=-20");

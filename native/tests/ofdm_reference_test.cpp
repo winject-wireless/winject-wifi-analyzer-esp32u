@@ -20,8 +20,11 @@ int main(int argc, char** argv)
     for (auto c : cs)
     {
         if (c.signal_valid)
+        {
             std::cerr << "signal " << c.signal_rate_mbps << " "
                       << c.signal_length_bytes << "\n";
+            std::cerr << "cand_ltf_snr " << ltf_snr_db(c) << "\n";
+        }
         auto d = decode(x, c, 40000000);
         if (d)
         {
