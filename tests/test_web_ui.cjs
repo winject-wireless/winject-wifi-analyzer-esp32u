@@ -60,9 +60,9 @@ ctx.localStorage = {getItem(){return savedPreferences}, setItem(_key,value){save
 go('restorePreferences()');
 assert(navs[1].active && detectors[1].active && plots[1].active);
 assert.equal(go('state.framePlot'), 'fft');
-assert.equal(go('state.filters.addr1'), 'aa:bb:cc:dd:ee:ff');
-assert.equal(elem('#filter-addr2').value, 'partial');
-assert(elem('#filter-error').textContent.includes('six hexadecimal octets'));
+assert.equal(go('state.filters.addr1'), 'AA-BB-CC-DD-EE-FF');assert(go("matchesFilters({fcs_ok:true,addr1:'aa:bb:cc:dd:ee:ff',addr2:'00:00:00:00:00:00'})")===false);
+assert.equal(elem('#filter-addr2').value, 'partial');assert.equal(go('state.filters.addr2'), 'partial');
+assert.equal(elem('#filter-error').textContent, '');
 assert.equal(elem('#filter-fcs').checked, true);
 go('savePreferences()');
 assert.equal(JSON.parse(savedPreferences).view, 'live');
@@ -150,6 +150,32 @@ go("renderFrameWaveform({capture_id:91,sample_rate_hz:40000000,frame_duration_us
 assert.equal(elem('#channel-meta').textContent,'Capture 91 · 20 µs · preamble only (SIGNAL not decoded)');
 go("renderFrameWaveform({capture_id:92,sample_rate_hz:40000000})");assert.equal(elem('#channel-meta').textContent,'Frame waveform unavailable');
 console.log('mocked UI: FFT for every detected frame with its window');
+// Address filters take a MAC (exact) or a regular expression; buses are hex ids separated by commas.
+const wj = (slots, extra={}) => { // winject MPDU hex with the given [size,bus] slots
+  const bits=[]; for(const [size] of [...slots, ...Array(5-slots.length).fill([0])]) for(let b=0;b<11;b++) bits.push((size>>b)&1);
+  const packed=Array(12).fill(0); bits.forEach((v,i)=>{const n=i+1; packed[n>>3]|=v<<(n&7);});
+  const body=slots.flatMap(([size,bus])=>[bus,...Array(size-1).fill(0)]);
+  return [0x08,0,0,0,...packed,0xca,0xfe,0xba,0xbe,0xb0,0x0b,0x10,0x00,...body].map(b=>b.toString(16).padStart(2,'0')).join('');
+};
+go(`state.selectedFrame=null;state.frozenFrames=null;state.fcsOnly=false;state.completeOnly=false;state.filters={addr1:'',addr2:'',addr3:'',buses:''};
+ state.verifiedFrames=[{capture_id:100,start_sample:1,fcs_ok:true,addr1:'87:00:00:00:00:00',addr3:'ca:fe:ba:be:b0:0b',mpdu_hex:'${wj([[10,0xc3],[5,0x17]])}'},
+                       {capture_id:101,start_sample:1,fcs_ok:true,addr1:'6d:00:00:00:00:00',addr3:'ca:fe:ba:be:b0:0b',mpdu_hex:'${wj([[8,0xd4]])}'}];
+ state.frames=[{capture_id:102,start_sample:1,partial:true,fcs_ok:false,header_verified:false,addr1:'fd:0a:00:00:00:00',addr3:'ca:fe:ba:be:b0:0b',signal_length_bytes:24+1400+4,partial_mpdu_hex:'${wj([[1400,0xc3]]).slice(0,2*40)}'},
+               {capture_id:103,start_sample:1,fcs_ok:true,addr3:'aa:bb:cc:dd:ee:ff',addr1:'01:02:03:04:05:06'}];renderFrames()`);
+const ids=()=>go('visibleFrames().map(f=>f.capture_id)');
+assert.deepEqual(ids(),[103,102,101,100]);
+const setFilter=(key,value)=>{elem('#filter-'+key).value=value;handlers['#filter-'+key+':input']();};
+setFilter('addr3','^ca:fe');assert.deepEqual(ids(),[102,101,100]);
+setFilter('addr1','^(87|fd)');assert.deepEqual(ids(),[102,100]);
+setFilter('addr1','');setFilter('buses','c3');assert.deepEqual(ids(),[102,100]);
+setFilter('buses','0x17, d4');assert.deepEqual(ids(),[101,100]);
+setFilter('buses','zz');assert(elem('#filter-error').textContent.startsWith('Buses:'));assert.deepEqual(ids(),[101,100]);
+setFilter('buses','');setFilter('addr2','(');assert(elem('#filter-error').textContent.startsWith('Address 2: invalid'));
+setFilter('addr2','');assert.equal(elem('#filter-error').textContent,'');
+setFilter('addr3','CA-FE-BA-BE-B0-0B');assert.deepEqual(ids(),[102,101,100]);
+go('selectFrame(state.frames.find(f=>f.capture_id===102))');assert(elem('#frame-winject').textContent.includes('MPDU: 1424 B (partial, unverified)'));assert(elem('#frame-winject').textContent.includes('bus 0xc3'));
+go('resumeLive()');elem('#clear-filters').onclick();assert.equal(go('state.filters.buses'),'');assert.deepEqual(ids(),[103,102,101,100]);
+console.log('mocked UI: regex address and bus filters');
 
 // Manually select the reference tone and reject frequencies near DC.
 go("state.status.mode='live';state.live={spectrum:{start_hz:2400000000,bin_hz:100000,db:Array(32).fill(-90)}};state.live.spectrum.db[16]=0;state.live.spectrum.db[17]=-1;state.live.spectrum.db[20]=-10;state.live.spectrum.db[23]=-20");

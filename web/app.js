@@ -4,7 +4,7 @@ const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelect
 const state = {
   status: null, live: null, liveAt: 0, snapshot: null, points: 'corrected',
   history: [], sweep: {}, peakHold: null,
-  frames: [], verifiedFrames: [], selectedFrame: null, liveCandidate: null, liveCandidateAt: 0, filters: {addr1: '', addr2: '', addr3: ''}, fcsOnly: false, completeOnly: false, framePlot: 'fft', calibration: null,
+  frames: [], verifiedFrames: [], selectedFrame: null, liveCandidate: null, liveCandidateAt: 0, filters: {addr1: '', addr2: '', addr3: '', buses: ''}, fcsOnly: false, completeOnly: false, framePlot: 'fft', calibration: null,
 };
 let ws = null;
 const preferencesKey = 'winject-analyzer-view-v1';
@@ -18,7 +18,7 @@ function savePreferences() {
     framePlot: state.framePlot, fcsOnly: state.fcsOnly, completeOnly: state.completeOnly, filters: state.filters,
     sweepInputs: Object.fromEntries(sweepValueFields.map(id => [id, $(`#${id}`).value])),
     sweepRepeat: $('#sweep-repeat').checked,
-    filterInputs: Object.fromEntries(['addr1', 'addr2', 'addr3'].map(k => [k, $(`#filter-${k}`).value])),
+    filterInputs: Object.fromEntries(FILTER_KEYS.map(k => [k, $(`#filter-${k}`).value])),
   };
   try { localStorage.setItem(preferencesKey, JSON.stringify(preferences)); } catch (_) { /* Storage may be unavailable. */ }
 }
@@ -48,13 +48,15 @@ function restorePreferences() {
   $('#filter-fcs').checked = state.fcsOnly;
   state.completeOnly = saved.completeOnly === true;
   $('#filter-complete').checked = state.completeOnly;
-  for (const key of ['addr1', 'addr2', 'addr3']) {
-    const value = typeof saved.filters?.[key] === 'string' ? normalizeMac(saved.filters[key]) : '';
-    state.filters[key] = value || '';
-    $(`#filter-${key}`).value = typeof saved.filterInputs?.[key] === 'string' ? saved.filterInputs[key] : state.filters[key];
+  const errors = [];
+  for (const key of FILTER_KEYS) {
+    const raw = typeof saved.filterInputs?.[key] === 'string' ? saved.filterInputs[key] : typeof saved.filters?.[key] === 'string' ? saved.filters[key] : '';
+    $(`#filter-${key}`).value = raw;
+    const error = filterError(key, raw);
+    state.filters[key] = error ? '' : raw.trim();
+    if (error) errors.push(error);
   }
-  if (['addr1', 'addr2', 'addr3'].some(k => normalizeMac($(`#filter-${k}`).value) === null))
-    $('#filter-error').textContent = 'Use six hexadecimal octets, for example ca:fe:ba:be:00:01.';
+  $('#filter-error').textContent = errors.join(' ');
 }
 
 
@@ -485,12 +487,58 @@ function normalizeMac(s) {
   if (!/^[0-9a-f]{12}$/.test(compact)) return null;
   return compact.match(/../g).join(':');
 }
+// Address filters: a plain MAC (any separators or case) matches that address exactly; anything
+// else is a case-insensitive regular expression tested against "aa:bb:cc:dd:ee:ff".
+// Buses: hex bus ids separated by commas ("c3, 0x17"); a frame matches when any of its
+// winject slots is on one of them.
+const FILTER_KEYS = ['addr1', 'addr2', 'addr3', 'buses'];
+const FILTER_LABELS = {addr1: 'Address 1', addr2: 'Address 2', addr3: 'Address 3', buses: 'Buses'};
+const filterCache = new Map();
+function addressMatcher(pattern) {
+  const key = `a:${pattern}`;
+  if (!filterCache.has(key)) {
+    const mac = normalizeMac(pattern);
+    const re = mac ? null : new RegExp(pattern, 'i');  // throws on an invalid pattern
+    filterCache.set(key, a => !!a && (mac ? normalizeMac(a) === mac : re.test(a)));
+  }
+  return filterCache.get(key);
+}
+function busSet(text) {
+  const key = `b:${text}`;
+  if (!filterCache.has(key)) {
+    const buses = text.split(',').map(t => t.trim()).filter(Boolean).map(t => {
+      if (!/^(0x)?[0-9a-f]{1,2}$/i.test(t)) throw new Error(t);
+      return parseInt(t.replace(/^0x/i, ''), 16);
+    });
+    filterCache.set(key, new Set(buses));
+  }
+  return filterCache.get(key);
+}
+function filterError(key, raw) {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  try { key === 'buses' ? busSet(value) : addressMatcher(value); return ''; }
+  catch (_) { return key === 'buses' ? 'Buses: use hex bus ids separated by commas, for example c3, 17.' : `${FILTER_LABELS[key]}: invalid regular expression.`; }
+}
+function frameBuses(f) {
+  const w = decodeWinject(f);
+  return w ? w.slots.filter(s => s.size && Number.isInteger(s.bus)).map(s => s.bus) : [];
+}
 function matchesFilters(frame) {
   const addr = frameAddresses(frame);
   if (state.fcsOnly && !frame.fcs_ok) return false;
   // Complete frames only: hide frames cut off by the end of the capture.
   if (state.completeOnly && frame.partial === true) return false;
-  return Object.entries(state.filters).every(([key, value]) => !value || (normalizeMac(addr[key] || '') === value));
+  for (const key of ['addr1', 'addr2', 'addr3']) {
+    const value = state.filters[key];
+    if (value && !filterError(key, value) && !addressMatcher(value)(addr[key])) return false;
+  }
+  const buses = state.filters.buses;
+  if (buses && !filterError('buses', buses)) {
+    const want = busSet(buses);
+    if (want.size && !frameBuses(frame).some(b => want.has(b))) return false;
+  }
+  return true;
 }
 function filtersChanged() {
   if (state.liveCandidate && !matchesFilters(state.liveCandidate)) state.liveCandidate = null;
@@ -547,8 +595,11 @@ function frameSize(f) {
   return f?.fcs_ok && typeof f.mpdu_hex === 'string' && /^(?:[0-9a-f]{2})+$/i.test(f.mpdu_hex) ? f.mpdu_hex.length / 2 + 4 : null;
 }
 function decodeWinject(f) {
-  const hex = f?.mpdu_hex;
-  if (!f?.fcs_ok || typeof hex !== 'string' || !/^(?:[0-9a-f]{2})+$/i.test(hex)) return null;
+  // Partial frames: the captured bytes (unverified); slot sizes are checked against the full
+  // MPDU length from SIGNAL, and slots past the captured bytes have no bus.
+  const partial = !f?.fcs_ok && f?.header_verified === false;
+  const hex = f?.fcs_ok ? f.mpdu_hex : partial ? f.partial_mpdu_hex : null;
+  if (typeof hex !== 'string' || !/^(?:[0-9a-f]{2})+$/i.test(hex)) return null;
   const bytes = hex.match(/../g).map(x => parseInt(x, 16));
   // Mpdu::rescan accepts plain data frames with no flags and exact slot layout.
   if (bytes.length < 24 || bytes[0] !== 0x08 || bytes[1] !== 0 ||
@@ -562,14 +613,15 @@ function decodeWinject(f) {
     }
     return value;
   });
-  if (sizes.reduce((a, b) => a + b, 0) !== bytes.length - 24) return null;
+  const total = partial ? f.signal_length_bytes - 4 : bytes.length;
+  if (!Number.isFinite(total) || sizes.reduce((a, b) => a + b, 0) !== total - 24) return null;
   let offset = 24;
   const slots = sizes.map((size, index) => {
-    const slot = {index, size, offset, bus: size ? bytes[offset] : null};
+    const slot = {index, size, offset, bus: size && offset < bytes.length ? bytes[offset] : null};
     offset += size;
     return slot;
   });
-  return {domain: (bytes[20] << 8) | bytes[21], slots};
+  return {domain: (bytes[20] << 8) | bytes[21], slots, partial, length: total};
 }
 function renderMpdu(f, winject) {
   const el = $('#frame-mpdu'), hex = f?.mpdu_hex || f?.partial_mpdu_hex;
@@ -652,7 +704,7 @@ function renderFrames() {
   $('#frame-status').textContent = f ? [f.reason || f.status || 'Preamble candidate; frame not decoded.', f.fcs_ok ? f.evm_warning : f.training_warning].filter(Boolean).join(' ') : 'Decoded frame fields appear when available.';
   const winject = decodeWinject(f);
   renderMpdu(f, winject);
-  $('#frame-winject').textContent = winject ? [`Domain: 0x${winject.domain.toString(16).padStart(4, '0')}`, `MPDU: ${frameSize(f)} B`, ...winject.slots.map(s => `#${s.index}: ${s.size} B${s.bus === null ? '' : ` · bus 0x${s.bus.toString(16).padStart(2, '0')}`}`)].join('\n') : 'Not a decoded winject frame';
+  $('#frame-winject').textContent = winject ? [`Domain: 0x${winject.domain.toString(16).padStart(4, '0')}`, winject.partial ? `MPDU: ${winject.length} B (partial, unverified)` : `MPDU: ${frameSize(f)} B`, ...winject.slots.map(s => `#${s.index}: ${s.size} B${s.bus === null ? (s.size && winject.partial ? ' · bus not captured' : '') : ` · bus 0x${s.bus.toString(16).padStart(2, '0')}`}`)].join('\n') : 'Not a decoded winject frame';
   $('#frame-gain').textContent = Number.isFinite(f?.gain_index) ? `${f.gain_index} (${f.agc === true ? 'AGC' : f.agc === false ? 'manual' : 'mode unknown'})` : 'Unavailable';
   const frameOffset = frameCalibrationOffset(f);
   for (const [id, key] of [['peak', 'frame_peak_dbfs'], ['mean', 'frame_mean_dbfs'], ['noise', 'noise_floor_dbfs']]) $(`#frame-${id}`).textContent = framePowerText(f?.[key], frameOffset);
@@ -970,14 +1022,15 @@ $('#return-live').onclick = resumeLive;
 $('#frames-resume').onclick = resumeLive;
 $('#run').onclick = () => send({op: 'live', on: state.status?.mode !== 'live'});
 $('#snapshot').onclick = () => send({op: 'snapshot'});
-for (const key of ['addr1', 'addr2', 'addr3']) {
+for (const key of FILTER_KEYS) {
   $(`#filter-${key}`).addEventListener('input', () => {
-    const values = Object.fromEntries(['addr1', 'addr2', 'addr3'].map(k => [k, normalizeMac($(`#filter-${k}`).value)]));
-    if (Object.values(values).some(v => v === null)) { savePreferences(); $('#filter-error').textContent = 'Use six hexadecimal octets, for example ca:fe:ba:be:00:01.'; return; }
-    $('#filter-error').textContent = ''; state.filters = values; filtersChanged(); savePreferences();
+    const raw = Object.fromEntries(FILTER_KEYS.map(k => [k, $(`#filter-${k}`).value.trim()]));
+    const errors = FILTER_KEYS.map(k => filterError(k, raw[k])).filter(Boolean);
+    if (errors.length) { savePreferences(); $('#filter-error').textContent = errors.join(' '); return; }
+    $('#filter-error').textContent = ''; state.filters = raw; filtersChanged(); savePreferences();
   });
 }
-$('#clear-filters').onclick = () => { for (const key of ['addr1', 'addr2', 'addr3']) $(`#filter-${key}`).value = ''; state.filters = {addr1: '', addr2: '', addr3: ''}; state.fcsOnly = false; $('#filter-fcs').checked = false; state.completeOnly = false; $('#filter-complete').checked = false; $('#filter-error').textContent = ''; filtersChanged(); savePreferences(); };
+$('#clear-filters').onclick = () => { for (const key of FILTER_KEYS) $(`#filter-${key}`).value = ''; state.filters = {addr1: '', addr2: '', addr3: '', buses: ''}; state.fcsOnly = false; $('#filter-fcs').checked = false; state.completeOnly = false; $('#filter-complete').checked = false; $('#filter-error').textContent = ''; filtersChanged(); savePreferences(); };
 const sweepRateHz = 40_000_000;
 const sweepLpfMhz = 20;
 
