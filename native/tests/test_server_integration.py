@@ -54,7 +54,7 @@ async def run():
     data=json.loads(await asyncio.wait_for(ws.recv(),5))
     if data['event']=='error':raise RuntimeError(str(data))
     if data['event']==name:return data['data']
-  st=await event('status');assert st['mode']=='live' and 'decoder_partial' in st;print('status',st['decoder_formats'],st['decoder_backend'])
+  st=await event('status');assert st['mode']=='live' and 'decoder_partial' in st and st['client_dropped']==0;print('status',st['decoder_formats'],st['decoder_backend'])
   data=await event('live');assert data['samples']==1024 and len(data['spectrum']['db'])==1024;print('live',data['capture_id'],data['samples'])
   await ws.send(json.dumps({'op':'calibration.start','power_dbm':-60,'tone_hz':2410000000+79*40000000/1024,'start_gain':1,'end_gain':2})); done=await event('calibration.done');assert not done['error'] and len(done['points'])==2 and [p['settings']['gain'] for p in done['points']]==[1,2],done;assert all(p['measurements']==9 and p['inliers']==7 and abs(p['measured_dbfs']-20*math.log10(24*4/511))<.2 for p in done['points']),done;print('calibration rejects clipping and outliers; restores live')
   await ws.send(json.dumps({'op':'snapshot'}));snap=await event('snapshot');assert snap['samples']==1024
