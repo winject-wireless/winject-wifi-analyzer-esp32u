@@ -150,13 +150,16 @@ go("state.selectedFrame.calibration_settings.gain=41;renderChannelResponse()");a
 go("state.selectedFrame.calibration_settings.gain=41;renderFrames();state.framePlot='envelope';renderChannelResponse()");assert.equal(elem('#frame-peak').textContent,'0.00 dBFS');assert(elem('#channel-note').textContent.includes('matching calibration'));
 console.log('mocked UI: calibrated frame powers and envelope axis');
 // Each row uses its own captured calibration and distinguishes unknown clipping.
-go("state.selectedFrame.calibration_settings.gain=40;state.selectedFrame.evm_percent=4.25");
+go("state.selectedFrame.calibration_settings.gain=40;state.selectedFrame.evm_percent=4.25;state.selectedFrame.snr_db=21.34;state.selectedFrame.noise_floor_dbfs=-30;state.selectedFrame.ltf_snr_db=18.06");
 let row=go('frameRowValues(state.selectedFrame)');
-assert.equal(row[0],'55.0');assert.equal(row[3],'4.25 %');assert.equal(row[4],'-10.00 dBFS (10.0 dBm)');assert.equal(row[5],'Yes');
+assert.equal(row[0],'55.0');assert.equal(row[3],'4.25 %');assert.equal(row[4],'-10.00 dBFS (10.0 dBm)');assert.equal(row[5],'21.3 dB');assert.equal(row[6],'18.1 dB');assert.equal(row[7],'-30.00 dBFS (-10.0 dBm)');assert.equal(row[8],'Yes');
+go('renderFrames()');assert.equal(elem('#frame-snr').textContent,'21.3 dB');assert.equal(elem('#frame-noise').textContent,'-30.00 dBFS (-10.0 dBm)');assert.equal(elem('#frame-ltf-snr').textContent,'18.1 dB');
+console.log('mocked UI: frame SNR and in-band noise floor');
 go("state.selectedFrame.calibration_settings.gain=41;state.selectedFrame.frame_clipped=false");
-row=go('frameRowValues(state.selectedFrame)');assert.equal(row[4],'-10.00 dBFS');assert.equal(row[5],'No');
-go("delete state.selectedFrame.frame_clipped; delete state.selectedFrame.frame_mean_dbfs; delete state.selectedFrame.evm_percent");
-row=go('frameRowValues(state.selectedFrame)');assert.equal(row[3],'Unavailable');assert.equal(row[4],'Unavailable');assert.equal(row[5],'Unavailable');
+row=go('frameRowValues(state.selectedFrame)');assert.equal(row[4],'-10.00 dBFS');assert.equal(row[7],'-30.00 dBFS');assert.equal(row[8],'No');
+go("delete state.selectedFrame.frame_clipped; delete state.selectedFrame.frame_mean_dbfs; delete state.selectedFrame.evm_percent; state.selectedFrame.snr_db=null; delete state.selectedFrame.noise_floor_dbfs; delete state.selectedFrame.ltf_snr_db");
+row=go('frameRowValues(state.selectedFrame)');assert.equal(row[3],'Unavailable');assert.equal(row[4],'Unavailable');assert.equal(row[5],'Unavailable');assert.equal(row[6],'Unavailable');assert.equal(row[7],'Unavailable');assert.equal(row[8],'Unavailable');
+go('renderFrames()');assert.equal(elem('#frame-snr').textContent,'Unavailable');assert.equal(elem('#frame-noise').textContent,'Unavailable');assert.equal(elem('#frame-ltf-snr').textContent,'Unavailable');
 
 
 // Sweep converts usable peek width and overlap to tuning steps and sends milliseconds.

@@ -1,6 +1,7 @@
 #pragma once
 #include <complex>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -33,6 +34,8 @@ struct Decoded
     int ltf_start_sample = 0, frame_end_sample = 0;
     float evm_percent = 0, clipped_fraction = 0, ltf_match = 0;
     bool evm_valid = false;
+    // SNR from the two identical L-LTF symbols (NaN when not measurable).
+    float ltf_snr_db = std::numeric_limits<float>::quiet_NaN();
 };
 std::vector<Candidate> detect(const std::vector<std::complex<float>>&,
                               int sample_rate_hz);
