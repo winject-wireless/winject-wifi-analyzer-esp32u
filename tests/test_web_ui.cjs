@@ -136,6 +136,13 @@ assert(elem('#c-description').textContent.includes('not FCS verified'));
 go("onFrames({frames:[{capture_id:71,start_sample:9000,status:'partial',partial:true,constellation:[[1,0]],training_evm_percent:3}]});selectFrame(state.frames.find(f=>f.capture_id===71));renderConstellation()");
 assert.notEqual(elem('#c-title').textContent,'Decoded data-field constellation (partial)');go('resumeLive()');
 console.log('mocked UI: partial frames show their corrected data constellation');
+// "Complete frames only" hides partial frames; Clear filters resets it.
+go("state.selectedFrame=null;state.frozenFrames=null;state.filters={addr1:'',addr2:'',addr3:''};state.fcsOnly=false;state.verifiedFrames=[{capture_id:80,start_sample:1,fcs_ok:true}];state.frames=[{capture_id:81,start_sample:1,partial:true,status:'partial'},{capture_id:79,start_sample:1,partial:false,status:'candidate'}];renderFrames()");
+assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[81,80,79]);
+elem('#filter-complete').checked=true;handlers['#filter-complete:change']();assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[80,79]);
+assert.equal(go('state.completeOnly'),true);
+elem('#clear-filters').onclick();assert.equal(go('state.completeOnly'),false);assert.deepEqual(go('visibleFrames().map(f=>f.capture_id)'),[81,80,79]);
+console.log('mocked UI: complete-frames-only filter');
 
 // Manually select the reference tone and reject frequencies near DC.
 go("state.status.mode='live';state.live={spectrum:{start_hz:2400000000,bin_hz:100000,db:Array(32).fill(-90)}};state.live.spectrum.db[16]=0;state.live.spectrum.db[17]=-1;state.live.spectrum.db[20]=-10;state.live.spectrum.db[23]=-20");

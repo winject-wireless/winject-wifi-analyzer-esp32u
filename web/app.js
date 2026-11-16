@@ -4,7 +4,7 @@ const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelect
 const state = {
   status: null, live: null, liveAt: 0, snapshot: null, points: 'corrected',
   history: [], sweep: {}, peakHold: null,
-  frames: [], verifiedFrames: [], selectedFrame: null, liveCandidate: null, liveCandidateAt: 0, filters: {addr1: '', addr2: '', addr3: ''}, fcsOnly: false, framePlot: 'fft', calibration: null,
+  frames: [], verifiedFrames: [], selectedFrame: null, liveCandidate: null, liveCandidateAt: 0, filters: {addr1: '', addr2: '', addr3: ''}, fcsOnly: false, completeOnly: false, framePlot: 'fft', calibration: null,
 };
 let ws = null;
 const preferencesKey = 'winject-analyzer-view-v1';
@@ -15,7 +15,7 @@ function savePreferences() {
   const activeDetector = $('[data-detector].active');
   const preferences = {
     view: activeView?.dataset.view, detector: activeDetector?.dataset.detector,
-    framePlot: state.framePlot, fcsOnly: state.fcsOnly, filters: state.filters,
+    framePlot: state.framePlot, fcsOnly: state.fcsOnly, completeOnly: state.completeOnly, filters: state.filters,
     sweepInputs: Object.fromEntries(sweepValueFields.map(id => [id, $(`#${id}`).value])),
     sweepRepeat: $('#sweep-repeat').checked,
     filterInputs: Object.fromEntries(['addr1', 'addr2', 'addr3'].map(k => [k, $(`#filter-${k}`).value])),
@@ -46,6 +46,8 @@ function restorePreferences() {
   if (plot) { state.framePlot = saved.framePlot; $$('[data-frame-plot]').forEach(b => b.classList.toggle('active', b === plot)); }
   state.fcsOnly = saved.fcsOnly === true;
   $('#filter-fcs').checked = state.fcsOnly;
+  state.completeOnly = saved.completeOnly === true;
+  $('#filter-complete').checked = state.completeOnly;
   for (const key of ['addr1', 'addr2', 'addr3']) {
     const value = typeof saved.filters?.[key] === 'string' ? normalizeMac(saved.filters[key]) : '';
     state.filters[key] = value || '';
@@ -486,6 +488,8 @@ function normalizeMac(s) {
 function matchesFilters(frame) {
   const addr = frameAddresses(frame);
   if (state.fcsOnly && !frame.fcs_ok) return false;
+  // Complete frames only: hide frames cut off by the end of the capture.
+  if (state.completeOnly && frame.partial === true) return false;
   return Object.entries(state.filters).every(([key, value]) => !value || (normalizeMac(addr[key] || '') === value));
 }
 function filtersChanged() {
@@ -937,6 +941,7 @@ for (const id of ['freq','rate','gain','gain-index','bw','n','bits']) $(`#${id}`
   send(config());
 });
 $('#filter-fcs').addEventListener('change', () => { state.fcsOnly = $('#filter-fcs').checked; filtersChanged(); savePreferences(); });
+$('#filter-complete').addEventListener('change', () => { state.completeOnly = $('#filter-complete').checked; filtersChanged(); savePreferences(); });
 $$('[data-frame-plot]').forEach(b => b.onclick = () => { state.framePlot = b.dataset.framePlot; $$('[data-frame-plot]').forEach(x => x.classList.toggle('active', x === b)); renderChannelResponse(); savePreferences(); });
 $('#frames-scroll').addEventListener('keydown', e => {
   if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
@@ -968,7 +973,7 @@ for (const key of ['addr1', 'addr2', 'addr3']) {
     $('#filter-error').textContent = ''; state.filters = values; filtersChanged(); savePreferences();
   });
 }
-$('#clear-filters').onclick = () => { for (const key of ['addr1', 'addr2', 'addr3']) $(`#filter-${key}`).value = ''; state.filters = {addr1: '', addr2: '', addr3: ''}; state.fcsOnly = false; $('#filter-fcs').checked = false; $('#filter-error').textContent = ''; filtersChanged(); savePreferences(); };
+$('#clear-filters').onclick = () => { for (const key of ['addr1', 'addr2', 'addr3']) $(`#filter-${key}`).value = ''; state.filters = {addr1: '', addr2: '', addr3: ''}; state.fcsOnly = false; $('#filter-fcs').checked = false; state.completeOnly = false; $('#filter-complete').checked = false; $('#filter-error').textContent = ''; filtersChanged(); savePreferences(); };
 const sweepRateHz = 40_000_000;
 const sweepLpfMhz = 20;
 
