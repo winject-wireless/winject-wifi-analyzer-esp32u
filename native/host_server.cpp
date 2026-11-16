@@ -112,9 +112,8 @@ public:
    // Powers and SNRs over the part of the frame the capture holds (the whole frame
    // unless it is partial); a decoded frame overwrites them with its own window.
    int st=std::max(0,f.start_sample),en=std::min<int>(x.size(),f.start_sample+int(frame_us*per_us+0.5));
-   if(en-st>=64){double sum=0,pk=0;for(int i=st;i<en;i++){double q=std::norm(x[i]);sum+=q;pk=std::max(pk,q);}
-    auto fs=winject::simd::power(x.data()+st,en-st);std::complex<double> fdc(fs.real_sum/(en-st),fs.imag_sum/(en-st));
-    r["frame_mean_dbfs"]=db(sum/(en-st));r["frame_peak_dbfs"]=db(pk);r["frame_rssi_dbfs"]=db(std::max(0.0,fs.sum/(en-st)-std::norm(fdc)));r["frame_clipped"]=fs.clipped>0;r["frame_duration_us"]=(en-st)/per_us;
+   if(en-st>=64){auto fs=winject::simd::power(x.data()+st,en-st);std::complex<double> fdc(fs.real_sum/(en-st),fs.imag_sum/(en-st));
+    r["frame_mean_dbfs"]=db(fs.sum/(en-st));r["frame_peak_dbfs"]=db(fs.peak);r["frame_rssi_dbfs"]=db(std::max(0.0,fs.sum/(en-st)-std::norm(fdc)));r["frame_clipped"]=fs.clipped>0;r["frame_duration_us"]=(en-st)/per_us;
     auto snr=winject::snr::estimate(x,st,en);r["frame_inband_dbfs"]=std::isfinite(snr.frame_inband)?json(db(snr.frame_inband)):json(nullptr);r["noise_floor_dbfs"]=std::isfinite(snr.noise)?json(db(snr.noise)):json(nullptr);r["snr_db"]=std::isfinite(snr.snr_db)?json(snr.snr_db):json(nullptr);}
    float ltf=winject::ofdm::ltf_snr_db(f);r["ltf_snr_db"]=std::isfinite(ltf)?json(ltf):json(nullptr);
    if(partial){int symbols=std::max(0,int((captured_us-20)/4));int bytes=std::clamp((symbols*dbps-16)/8,0,f.signal_length_bytes);
