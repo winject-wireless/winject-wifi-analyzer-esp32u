@@ -41,5 +41,8 @@ std::vector<Candidate> detect(const std::vector<std::complex<float>>&,
                               int sample_rate_hz);
 std::optional<Decoded> decode(const std::vector<std::complex<float>>&,
                               const Candidate&, int sample_rate_hz);
+// L-LTF SNR of a candidate whose SIGNAL decoded (it does not need the rest of the
+// frame, so it also works for frames cut off by the end of the capture).
+float ltf_snr_db(const Candidate&);
 const char* simd_backend();
 }  // namespace winject::ofdm

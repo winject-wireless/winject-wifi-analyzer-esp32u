@@ -440,6 +440,33 @@ struct PreparedSignal
     };
     std::vector<Phase> phases;
 };
+// L-LTF SNR: the two LTF symbols carry the same samples, so after the fine CFO
+// correction their difference is noise only (E|y1-y2|^2 = 2 sigma^2 per subcarrier)
+// and their mean holds the signal plus sigma^2 / 2. Summed over the 52 occupied
+// subcarriers this is the average-power SNR of one symbol. NaN when not measurable.
+static float ltf_snr(const std::vector<C>& z, int first)
+{
+    if (first < 0 || first + 128 > int(z.size())) return std::numeric_limits<float>::quiet_NaN();
+    std::array<C, 64> l1, l2;
+    for (int i = 0; i < 64; i++)
+    {
+        l1[i] = z[first + i];
+        l2[i] = z[first + 64 + i];
+    }
+    fft(l1);
+    fft(l2);
+    double noise = 0, signal = 0;
+    for (int k = -26; k <= 26; k++)
+    {
+        if (!k) continue;
+        const int b = (k + 64) % 64;
+        const double nk = std::norm(l1[b] - l2[b]) / 2;
+        noise += nk;
+        signal += std::norm((l1[b] + l2[b]) / 2.0) - nk / 2;
+    }
+    return noise > 0 && signal > 0 ? float(10 * std::log10(signal / noise))
+                                   : std::numeric_limits<float>::quiet_NaN();
+}
 
 static std::shared_ptr<PreparedSignal> prepare(const std::vector<std::complex<float>>& raw,
                                                const Candidate& c, int rate)
@@ -839,30 +866,7 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
         out.ltf_start_sample = first * 2 + phase;
         out.frame_end_sample = (first + 128 + 80 * (n + 1)) * 2 + phase;
         out.ltf_match = norm;
-        // L-LTF SNR: the two LTF symbols carry the same samples, so after the fine
-        // CFO correction their difference is noise only (E|y1-y2|^2 = 2 sigma^2 per
-        // subcarrier) and their mean holds the signal plus sigma^2 / 2. Summed over
-        // the 52 occupied subcarriers this is the average-power SNR of one symbol.
-        {
-            std::array<C, 64> l1, l2;
-            for (int i = 0; i < 64; i++)
-            {
-                l1[i] = z[first + i];
-                l2[i] = z[first + 64 + i];
-            }
-            fft(l1);
-            fft(l2);
-            double noise = 0, signal = 0;
-            for (int k = -26; k <= 26; k++)
-            {
-                if (!k) continue;
-                const int b = (k + 64) % 64;
-                const double nk = std::norm(l1[b] - l2[b]) / 2;
-                noise += nk;
-                signal += std::norm((l1[b] + l2[b]) / 2.0) - nk / 2;
-            }
-            if (noise > 0 && signal > 0) out.ltf_snr_db = float(10 * std::log10(signal / noise));
-        }
+        out.ltf_snr_db = ltf_snr(z, first);
         out.raw_data_iq.assign(raw_points.begin(), raw_points.end());
         // L-LTF has no pilots. Show both FFT symbols after channel equalization,
         // using the same CFO-corrected samples and channel as the data symbols.
@@ -905,5 +909,11 @@ std::optional<Decoded> decode(const std::vector<std::complex<float>>& raw,
         return out;
     }
     return {};
+}
+float ltf_snr_db(const Candidate& c)
+{
+    if (!c.prepared || c.prepared->phases.empty()) return std::numeric_limits<float>::quiet_NaN();
+    const auto& p = c.prepared->phases.front();
+    return ltf_snr(p.z, p.first);
 }
 }  // namespace winject::ofdm

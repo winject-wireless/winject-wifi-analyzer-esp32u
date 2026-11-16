@@ -146,6 +146,31 @@ class NativeOfdmReference(unittest.TestCase):
         self.assertGreaterEqual(len(got),5,'frame did not decode often enough')
         self.assertAlmostEqual(float(np.median(got)),20,delta=1.0)
 
+    def test_candidate_ltf_snr_works_on_truncated_frame(self):
+        # A frame cut off by the end of the capture never decodes, but its L-LTF is
+        # complete, so the candidate still reports the SNR.
+        mpdu=bytes.fromhex('08000000 ffffffffffff 102030405060 aabbccddeeff 3012')+bytes(400)
+        clean,short,long=make_frame(mpdu,rate=6)
+        ltf_power=np.mean(np.abs(clean[long+64:long+64+256])**2)
+        freqs=np.fft.fftfreq(len(clean),1/40e6)
+        band=(np.abs(freqs)<=8.125e6)&(np.abs(freqs)>=312.5e3/2)
+        path=pathlib.Path(self.temp.name)/'ltf-cut.cf32'
+        got=[]
+        for seed in range(7):
+            rng=np.random.default_rng(200+seed)
+            spec=np.zeros(len(clean),complex)
+            spec[band]=rng.normal(size=band.sum())+1j*rng.normal(size=band.sum())
+            noise=np.fft.ifft(spec)
+            noise*=np.sqrt(ltf_power/10**(20/10)/np.mean(np.abs(noise)**2))
+            cut=(clean+noise)[:len(clean)//2]
+            np.asarray(cut,np.complex64).tofile(path)
+            r=subprocess.run([self.exe,path,str(short),str(long)],capture_output=True,text=True,check=True)
+            self.assertEqual(r.stdout,'','truncated frame must not decode')
+            values=[float(l.split()[1]) for l in r.stderr.splitlines() if l.startswith('cand_ltf_snr ')]
+            if values and np.isfinite(values[-1]): got.append(values[-1])
+        self.assertGreaterEqual(len(got),5)
+        self.assertAlmostEqual(float(np.median(got)),20,delta=1.0)
+
     def test_detector_reports_signal_before_payload_fcs(self):
         mpdu=bytes.fromhex('08000000 ffffffffffff 102030405060 aabbccddeeff 3012')+b'legacy OFDM detector'
         path=pathlib.Path(self.temp.name)/'header.cf32'
